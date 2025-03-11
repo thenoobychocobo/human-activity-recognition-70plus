@@ -3,7 +3,10 @@
 ####################
 
 # Generic/Built-in
+import os
+import time
 from typing import *
+from datetime import datetime
 
 # Libs
 import torch
@@ -23,8 +26,9 @@ def train_HAR70_model(
     loss_history = []
     
     for epoch in range(num_epochs):
-        model.train() # Set model to training mode
+        start_time = time.time()
         epoch_loss = 0
+        model.train() # Set model to training mode
         
         for batch in train_dataloader:
             optimizer.zero_grad()
@@ -49,19 +53,23 @@ def train_HAR70_model(
         # 2) Evaluate model on validation set (if provided)
         if validation_dataloader:
             accuracy, f1, precision, recall, conf_matrix = evaluate_HAR70_model(model, validation_dataloader)
+            
+        end_time = time.time()
+        epoch_time = end_time - start_time
         
         if verbose:
-            print(f"Epoch [{epoch+1}/{num_epochs}]")
-            print(f"Training Loss: {epoch_loss}")
-            if validation_dataloader: print(f"Accuracy: {accuracy}, F1: {f1}, Precision: {precision}, Recall: {recall}") # TODO: conditional
-            
+            print(f"Epoch [{epoch+1}/{num_epochs}] | Time: {epoch_time:.2f}s")
+            print(f"Training Loss: {epoch_loss:.4f}")
+            if validation_dataloader: 
+                print(f"Accuracy: {accuracy:.4f}, F1: {f1:.4f}, Precision: {precision:.4f}, Recall: {recall:.4f}")
+
     return loss_history, accuracy, f1, precision, recall, conf_matrix
 
 def evaluate_HAR70_model(
     model, 
     val_dataloader: DataLoader
 ):
-    model.eval()
+    model.eval() # Set model to evaluation mode
     accuracy = torchmetrics.classification.MulticlassAccuracy(num_classes=7).to(model.device)
     f1_score = torchmetrics.classification.MulticlassF1Score(num_classes=7, average="macro").to(model.device)
     precision = torchmetrics.classification.MulticlassPrecision(num_classes=7, average="macro").to(model.device)
@@ -89,3 +97,13 @@ def evaluate_HAR70_model(
     final_conf_matrix = confusion_matrix.compute().cpu().numpy() 
 
     return final_accuracy, final_f1, final_precision, final_recall, final_conf_matrix
+
+def save_model(model, epoch, base_dir="models"):
+    # Create base directory if it does not exist
+    os.makedirs(base_dir, exist_ok=True)
+    
+    # Create subdirectory containing saved models from training session
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    directory_name = type(model).__name__ + "_" + timestamp
+    save_dir = os.path.join(base_dir, directory_name) # Subdirectory to save models from training session
+    os.makedirs(save_dir, exist_ok=True)

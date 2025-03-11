@@ -33,6 +33,7 @@ class HarLSTM(nn.Module):
             "cuda" if torch.cuda.is_available() else "cpu"
         )
         self.to(self.device)
+        print(f"{type(self).__name__} model loaded on {self.device}.")
 
     def forward(self, input_seq):
         # Map hidden state of final time step to prediction
