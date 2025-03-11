@@ -293,7 +293,8 @@ def prepare_datasets(
         train_ratio (float, optional): Proportion of the dataset to include in the train split. Defaults to 0.8.
         val_ratio (float, optional): Proportion of the dataset to include in the validation split. Defaults to 0.1.
         test_ratio (float, optional): Proportion of the dataset to include in the test split. Defaults to 0.1.
-        random_state (int, optional): Random seed for reproducibility. Defaults to 42.
+        random_state (int, optional): Random seed for reproducibility (for scikit-learn's `train_test_split`). 
+            Defaults to 42.
         data_dir (str, optional): Directory that contains the data. Defaults to "data".
         save_dir (str, optional): Directory to save/load components. Defaults to "saved_components".
         load_if_exists (bool, optional): If True, loads saved components if they exists; otherwise, recomputes. 
