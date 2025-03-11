@@ -134,30 +134,34 @@ def save_training_plots(training_loss_history, validation_loss_history, accuracy
     epochs = range(1, len(training_loss_history) + 1)  
     os.makedirs(base_dir, exist_ok=True) # Directory to save plots in
 
-    # Plot Training Loss
-    plt.figure(figsize=(10, 5))
-    plt.plot(epochs, training_loss_history, label="Training Loss", color="red", marker="o")
-    plt.xlabel("Epochs")
-    plt.ylabel("Loss")
-    plt.title("Training Loss Over Epochs")
-    
-    plt.grid(True)
-    plt.savefig(f"results/train_metrics.png")
-    plt.close()
+    # Plotting for all metrics
+    eval_metric_names = ["Training Loss", "Validation Loss", "Accuracy", "F1 score", "Precision", "Recall"]
+    eval_metrics = [training_loss_history, validation_loss_history, accuracy_history, f1_history, precision_history, recall_history]
 
-    # Plot Validation Metrics
-    plt.figure(figsize=(12, 6))
-    plt.plot(epochs, accuracy_history, label="Accuracy", marker="o")
-    plt.plot(epochs, f1_history, label="F1 Score", marker="s")
-    plt.plot(epochs, precision_history, label="Precision", marker="^")
-    plt.plot(epochs, recall_history, label="Recall", marker="d")
+    for i, eval_metric in enumerate(eval_metric_names):
+        plt.figure(figsize=(10, 5))
+        plt.plot(epochs, eval_metrics[i], label=eval_metric, color="red", marker="o")
+        plt.xlabel("Epochs")
+        plt.ylabel(eval_metric)
+        plt.title(f"{eval_metric} Over Epochs")
 
-    plt.xlabel("Epochs")
-    plt.ylabel("Metric Value")
-    plt.title("Validation Metrics Over Epochs")
+        plt.grid(True)
+        plt.savefig(f"results/{eval_metric}.png")
+        plt.close()
+
+    # # Plot Validation Metrics
+    # plt.figure(figsize=(12, 6))
+    # plt.plot(epochs, accuracy_history, label="Accuracy", marker="o")
+    # plt.plot(epochs, f1_history, label="F1 Score", marker="s")
+    # plt.plot(epochs, precision_history, label="Precision", marker="^")
+    # plt.plot(epochs, recall_history, label="Recall", marker="d")
+
+    # plt.xlabel("Epochs")
+    # plt.ylabel("Metric Value")
+    # plt.title("Validation Metrics Over Epochs")
     
-    plt.grid(True)
-    plt.savefig(f"results/val_metrics.png")
-    plt.close()
+    # plt.grid(True)
+    # plt.savefig(f"results/val_metrics.png")
+    # plt.close()
 
     
