@@ -15,7 +15,7 @@ import torch
 from torch.utils.data import Dataset, Subset
 from sklearn.model_selection import train_test_split
 
-def download_har70plus_dataset():
+def download_har70plus_dataset(base_dir="data"):
     """
     Downloads the HAR70+ dataset from the 
     [UCI repository](https://archive.ics.uci.edu/static/public/780/har70.zip)
@@ -24,44 +24,70 @@ def download_har70plus_dataset():
     Raises:
         RuntimeError: If the download fails.
     """
+    os.makedirs(base_dir, exist_ok=True)
     url = "https://archive.ics.uci.edu/static/public/780/har70.zip"
-    save_path = "data/har70.zip"
-    extract_folder = "data"
+    zip_path = os.path.join(base_dir, "har70.zip")
+    #extract_folder = "data"
+    extract_folder = os.path.join(base_dir, "har70plus")
 
-    # Ensure data folder exists
-    os.makedirs(extract_folder, exist_ok=True)
+    # Skip download if the zip file already exists
+    if os.path.exists(zip_path):
+        print(f"📂 Dataset already downloaded: {zip_path}")
+    else:
+        print(f"⬇️ Downloading HAR70+ dataset to {zip_path}...")
+        response = requests.get(url, stream=True)
+        if response.status_code != 200:
+            raise RuntimeError(f"❌ Failed to download dataset. HTTP Status Code: {response.status_code}")
 
-    # Download the dataset
-    response = requests.get(url, stream=True)
-    if response.status_code != 200:
-        raise RuntimeError(f"Failed to download dataset. HTTP Status Code: {response.status_code}")
+        with open(zip_path, "wb") as file:
+            for chunk in response.iter_content(chunk_size=1024):
+                file.write(chunk)
+        print(f"✅ Download complete: {zip_path}")
 
-    with open(save_path, 'wb') as file:
-        for chunk in response.iter_content(chunk_size=1024):
-            file.write(chunk)
-    print(f"Download complete: {save_path}")
+    # Skip extraction if dataset is already extracted
+    if os.path.exists(extract_folder):
+        print(f"📂 Dataset already extracted in {extract_folder}")
+    else:
+        print(f"📦 Extracting dataset to {extract_folder}...")
+        with zipfile.ZipFile(zip_path, "r") as zip_ref:
+            zip_ref.extractall(base_dir)
+        print(f"✅ Files extracted to: {extract_folder}")
 
-    # Extract the dataset
-    with zipfile.ZipFile(save_path, 'r') as zip_ref:
-        zip_ref.extractall(extract_folder)
-    print(f"Files extracted to: {extract_folder} directory")
-
-def load_har70_csv_files() -> pd.DataFrame:
+def load_har70_csv_files(base_dir="data") -> pd.DataFrame:
     """
     Loads all 18 HAR70+ dataset `.csv` files from `data/har70plus`.
     Remaps the class labels.
     """
-    # Compile dataframes of all 18 csv files
-    dfs: List[pd.DataFrame] = []
-    for subject_code in range(501, 519):
-        file_path = f"data/har70plus/{subject_code}.csv" 
-        dfs.append(pd.read_csv(file_path))
-    df_compiled = pd.concat(dfs, ignore_index=True)
+    dataset_folder = os.path.join(base_dir, "har70plus")
     
+    # Ensure dataset folder exists
+    if not os.path.exists(dataset_folder):
+        raise FileNotFoundError(f"❌ Dataset folder not found: {dataset_folder}. "
+                                "Please run `download_har70plus_dataset()` first.")
+    
+    # Compile DataFrames from all 18 CSV files
+    dfs: List[pd.DataFrame] = []
+    missing_files = []
+
+    for subject_code in range(501, 519):
+        file_path = os.path.join(dataset_folder, f"{subject_code}.csv")
+        if os.path.exists(file_path):
+            dfs.append(pd.read_csv(file_path))
+        else:
+            missing_files.append(file_path)
+
+    # If any files are missing, raise an error
+    if missing_files:
+        raise FileNotFoundError(f"❌ Missing files: {missing_files}")
+
+    # Combine all CSVs into a single DataFrame
+    df_compiled = pd.concat(dfs, ignore_index=True)
+
     # Remap labels
     label_mapping = {1: 0, 3: 1, 4: 2, 5: 3, 6: 4, 7: 5, 8: 6}
     df_compiled["label"] = df_compiled["label"].map(label_mapping)
-    
+
+    print(f"✅ Successfully loaded HAR70+ dataset ({len(df_compiled)} timestep samples).")
     return df_compiled
 
 class HARDataset(Dataset):
@@ -170,6 +196,7 @@ def prepare_datasets(
     val_ratio: float = 0.1,
     test_ratio: float = 0.1,
     random_state: int = 42,
+    data_dir: str = "data",
     save_dir: str = "saved_components",
     load_if_exists: bool = True
 ) -> Tuple[HARDatasetNormalized, HARDatasetNormalized, HARDatasetNormalized, Dict[str, torch.Tensor]]:
@@ -201,17 +228,17 @@ def prepare_datasets(
 
     # Load components if they exist and load_if_exists is True
     if load_if_exists and all(os.path.exists(path) for path in [dataset_path, norm_stats_path, split_indices_path]):
-        print("Loading saved components...")
+        print(f"✅ HARDataset object, normalization statistics, and split indices loaded from {save_dir}")
         dataset = torch.load(dataset_path, weights_only=False)
         norm_stats = torch.load(norm_stats_path, weights_only=False)
         split_indices = torch.load(split_indices_path, weights_only=False)
     else:
-        print("Preparing datasets from scratch...")
+        print(f"🔄 Preparing dataset: Sequence Size: {sequence_size}, Stride: {stride}, Gap Threshold: {gap_threshold}")
         # 0. Download the data
-        download_har70plus_dataset()
+        download_har70plus_dataset(base_dir=data_dir)
         
         # 1. Load the downloaded data
-        df = load_har70_csv_files()
+        df = load_har70_csv_files(base_dir=data_dir)
         
         # 2. Create the HARDataset object
         dataset = HARDataset(df, sequence_size, stride, gap_threshold)
@@ -240,7 +267,7 @@ def prepare_datasets(
         torch.save(dataset, dataset_path)
         torch.save(norm_stats, norm_stats_path)
         torch.save(split_indices, split_indices_path)
-        print(f"Components saved to {save_dir}")
+        print(f"✅ Components (HARDataset object, normalization statistics, and split indices) saved to {save_dir}")
 
     # Recreate subsets
     train_dataset = Subset(dataset, split_indices['train_idx'])
@@ -255,4 +282,5 @@ def prepare_datasets(
     val_dataset_norm = HARDatasetNormalized(val_dataset, normalizer)
     test_dataset_norm = HARDatasetNormalized(test_dataset, normalizer)
 
+    print(f"✅ Created train, validation, and test datasets (normalized to train set)")
     return train_dataset_norm, val_dataset_norm, test_dataset_norm, norm_stats
