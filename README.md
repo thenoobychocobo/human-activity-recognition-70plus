@@ -1,2 +1,2 @@
-# smartphone-human-activity-recognition
-Human activity recognition using smartphone signals.
+# human-activity-recognition-70plus
+Human activity recognition using sensor signals.
