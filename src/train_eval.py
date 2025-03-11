@@ -192,6 +192,7 @@ def save_training_plots_and_metric_history(
     f1_history: List[float], 
     precision_history: List[float], 
     recall_history: List[float], 
+    model: str,
     base_dir: str = "results"
 ) -> None:
     """
@@ -210,7 +211,7 @@ def save_training_plots_and_metric_history(
     # Create subdirectory to save metric histories and the plots to. 
     os.makedirs(base_dir, exist_ok=True) # Creates base directory
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S") # Use timestamp as subdirectory name
-    save_dir = os.path.join(base_dir, timestamp)
+    save_dir = os.path.join(base_dir, model + "_" + timestamp)
     os.makedirs(save_dir, exist_ok=True) # Create subdirectory
     
     epochs = range(1, len(training_loss_history) + 1)  
