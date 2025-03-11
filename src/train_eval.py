@@ -20,12 +20,14 @@ def train_HAR70_model(
     train_dataloader: DataLoader,
     validation_dataloader: Optional[DataLoader],
     num_epochs: int = 15,
+    base_dir: str = "models",
     verbose: bool = True,
 ):    
     criterion = nn.CrossEntropyLoss()
     loss_history = []
     
     for epoch in range(num_epochs):
+        epoch += 1 # Account for zero-indexing
         start_time = time.time()
         epoch_loss = 0
         model.train() # Set model to training mode
@@ -58,10 +60,13 @@ def train_HAR70_model(
         epoch_time = end_time - start_time
         
         if verbose:
-            print(f"Epoch [{epoch+1}/{num_epochs}] | Time: {epoch_time:.2f}s")
+            print(f"Epoch [{epoch}/{num_epochs}] | Time: {epoch_time:.2f}s")
             print(f"Training Loss: {epoch_loss:.4f}")
             if validation_dataloader: 
                 print(f"Accuracy: {accuracy:.4f}, F1: {f1:.4f}, Precision: {precision:.4f}, Recall: {recall:.4f}")
+                
+        # Save model every 5 epochs
+        save_model(model, epoch, base_dir=base_dir, verbose=verbose)
 
     return loss_history, accuracy, f1, precision, recall, conf_matrix
 
@@ -98,12 +103,22 @@ def evaluate_HAR70_model(
 
     return final_accuracy, final_f1, final_precision, final_recall, final_conf_matrix
 
-def save_model(model, epoch, base_dir="models"):
+def save_model(model, epoch, base_dir = "models", verbose: bool = True):
     # Create base directory if it does not exist
     os.makedirs(base_dir, exist_ok=True)
     
     # Create subdirectory containing saved models from training session
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    directory_name = type(model).__name__ + "_" + timestamp
-    save_dir = os.path.join(base_dir, directory_name) # Subdirectory to save models from training session
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S") # Use timestamp as subdirectory name
+    model_type = type(model).__name__
+    subdirectory_name = f"{model_type}_{timestamp}"
+    save_dir = os.path.join(base_dir, timestamp)
     os.makedirs(save_dir, exist_ok=True)
+    
+    model_type = type(model).__name__
+    model_filename = f"epoch_{epoch}.pth"
+    model_path = os.path.join(save_dir, model_filename)
+    torch.save(model.state_dict(), model_path)
+    if verbose: print(f"✅ Model saved: {model_path}")
+    
+    
+    
