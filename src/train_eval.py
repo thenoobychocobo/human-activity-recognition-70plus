@@ -7,6 +7,7 @@ import os
 import time
 from typing import *
 from datetime import datetime
+import matplotlib.pyplot as plt
 
 # Libs
 import torch
@@ -21,10 +22,10 @@ def train_HAR70_model(
     validation_dataloader: Optional[DataLoader],
     num_epochs: int = 15,
     base_dir: str = "models",
-    verbose: bool = True,
+    verbose: bool = True
 ):    
     criterion = nn.CrossEntropyLoss()
-    loss_history = []
+    loss_history, accuracy_history, f1_history, precision_history, recall_history = [], [], [], [], []
     
     for epoch in range(num_epochs):
         epoch += 1 # Account for zero-indexing
@@ -55,6 +56,10 @@ def train_HAR70_model(
         # 2) Evaluate model on validation set (if provided)
         if validation_dataloader:
             accuracy, f1, precision, recall, conf_matrix = evaluate_HAR70_model(model, validation_dataloader)
+            accuracy_history.append(accuracy)
+            f1_history.append(f1)
+            precision_history.append(precision)
+            recall_history.append(recall)
             
         end_time = time.time()
         epoch_time = end_time - start_time
@@ -66,9 +71,10 @@ def train_HAR70_model(
                 print(f"Accuracy: {accuracy:.4f}, F1: {f1:.4f}, Precision: {precision:.4f}, Recall: {recall:.4f}")
                 
         # Save model every 5 epochs
-        save_model(model, epoch, base_dir=base_dir, verbose=verbose)
+        if epoch % 5 == 0:
+            save_model(model, epoch, base_dir=base_dir, verbose=verbose)
 
-    return loss_history, accuracy, f1, precision, recall, conf_matrix
+    return loss_history, accuracy_history, f1_history, precision_history, recall_history, conf_matrix
 
 def evaluate_HAR70_model(
     model, 
@@ -120,5 +126,36 @@ def save_model(model, epoch, base_dir = "models", verbose: bool = True):
     torch.save(model.state_dict(), model_path)
     if verbose: print(f"✅ Model saved: {model_path}")
     
+def save_training_plots(loss_history, accuracy_history, f1_history, precision_history, recall_history, base_dir = "results"):
+    epochs = range(1, len(loss_history) + 1)  
+
+
+    os.makedirs(base_dir, exist_ok=True)
+
+    # Plot Training Loss
+    plt.figure(figsize=(10, 5))
+    plt.plot(epochs, loss_history, label="Training Loss", color="red", marker="o")
+    plt.xlabel("Epochs")
+    plt.ylabel("Loss")
+    plt.title("Training Loss Over Epochs")
     
+    plt.grid(True)
+    plt.savefig(f"results/train_metrics.png")
+    plt.close()
+
+    # Plot Validation Metrics
+    plt.figure(figsize=(12, 6))
+    plt.plot(epochs, accuracy_history, label="Accuracy", marker="o")
+    plt.plot(epochs, f1_history, label="F1 Score", marker="s")
+    plt.plot(epochs, precision_history, label="Precision", marker="^")
+    plt.plot(epochs, recall_history, label="Recall", marker="d")
+
+    plt.xlabel("Epochs")
+    plt.ylabel("Metric Value")
+    plt.title("Validation Metrics Over Epochs")
+    
+    plt.grid(True)
+    plt.savefig(f"results/val_metrics.png")
+    plt.close()
+
     
