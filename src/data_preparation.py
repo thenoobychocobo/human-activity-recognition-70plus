@@ -166,9 +166,9 @@ def prepare_datasets(
     sequence_size: int = 100,
     stride: int = 50,
     gap_threshold: float = 0.05,
-    train_ratio: float = 0.7,
-    val_ratio: float = 0.15,
-    test_ratio: float = 0.15,
+    train_ratio: float = 0.8,
+    val_ratio: float = 0.1,
+    test_ratio: float = 0.1,
     random_state: int = 42,
     save_dir: str = "saved_components",
     load_if_exists: bool = True
