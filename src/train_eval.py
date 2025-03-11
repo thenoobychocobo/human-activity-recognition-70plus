@@ -35,10 +35,11 @@ def train_HAR70_model(
     save_dir = os.path.join(base_dir, subdirectory_name) # Subdirectory
     os.makedirs(save_dir, exist_ok=True)
     
+    # Training step
     for epoch in range(num_epochs):
         epoch += 1 # Account for zero-indexing
         start_time = time.time()
-        training_loss = 0
+        total_training_loss = 0
         model.train() # Set model to training mode
         
         for batch in train_dataloader:
@@ -52,15 +53,16 @@ def train_HAR70_model(
             # Forward pass
             pred_logits = model(sequence_batch)
             loss = criterion(pred_logits, labels_batch)
-            training_loss += loss.item()
+            total_training_loss += loss.item()
             
             # Backward pass            
             loss.backward()
             optimizer.step()
             
         # After each epoch
-        # 1) Save the total loss for the epoch to loss_history
-        training_loss_history.append(training_loss) # TODO: have training loss be average instead of total
+        # 1) Save the average loss per sample for the epoch to loss_history
+        training_loss = total_training_loss / len(train_dataloader.dataset) # Average loss per sample
+        training_loss_history.append(training_loss)
         # 2) Evaluate model on validation set
         validation_loss, accuracy, f1, precision, recall, conf_matrix = evaluate_HAR70_model(model, validation_dataloader)
         validation_loss_history.append(validation_loss)
@@ -68,30 +70,32 @@ def train_HAR70_model(
         f1_history.append(f1)
         precision_history.append(precision)
         recall_history.append(recall)
-            
+        # 3) Record time taken for epoch (training + validation)
         end_time = time.time()
         epoch_time = end_time - start_time
         
         if verbose:
             print(f"Epoch [{epoch}/{num_epochs}] | Time: {epoch_time:.2f}s")
             print(f"(Training) Loss: {training_loss:.4f}")
-            print(f"(Validation) Loss: {validation_loss:.4f}, Accuracy: {accuracy:.4f}, F1: {f1:.4f}, Precision: {precision:.4f}, Recall: {recall:.4f}\n")
+            print(f"(Validation) Loss: {validation_loss:.4f}, Accuracy: {accuracy:.4f}, F1: {f1:.4f}, Precision: {precision:.4f}, Recall: {recall:.4f}")
                 
         # Save model every 5 epochs
         if epoch % 5 == 0:
             # Create base directory if it does not exist
             os.makedirs(base_dir, exist_ok=True)
             save_model(model, epoch, save_dir, verbose=verbose)
+            
+        if verbose: print("="*90)
 
     return training_loss_history, validation_loss_history, accuracy_history, f1_history, precision_history, recall_history, conf_matrix
 
 def evaluate_HAR70_model(
     model, 
-    validation_dataloader: DataLoader
+    evaluation_dataloader: DataLoader
 ):
     model.eval() # Set model to evaluation mode
     criterion = nn.CrossEntropyLoss()
-    validation_loss = 0
+    total_loss = 0
     
     accuracy = torchmetrics.classification.MulticlassAccuracy(num_classes=7).to(model.device)
     f1_score = torchmetrics.classification.MulticlassF1Score(num_classes=7, average="macro").to(model.device)
@@ -99,7 +103,7 @@ def evaluate_HAR70_model(
     recall = torchmetrics.classification.MulticlassRecall(num_classes=7, average="macro").to(model.device)
     confusion_matrix = torchmetrics.ConfusionMatrix(num_classes=7, task="multiclass").to(model.device)
     with torch.no_grad():  # No gradients needed for evaluation
-        for input_sequences, target_labels in validation_dataloader:
+        for input_sequences, target_labels in evaluation_dataloader:
             input_sequences, target_labels = input_sequences.to(model.device), target_labels.to(model.device)
 
             logits = model(input_sequences)  # Forward pass
@@ -107,7 +111,7 @@ def evaluate_HAR70_model(
 
             # Update metrics
             loss = criterion(logits, target_labels)
-            validation_loss += loss.item()
+            total_loss += loss.item()
             accuracy.update(predictions, target_labels)
             f1_score.update(predictions, target_labels)
             precision.update(predictions, target_labels)
@@ -115,13 +119,14 @@ def evaluate_HAR70_model(
             confusion_matrix.update(predictions, target_labels)
 
     # Compute final metric values
+    final_evaluation_loss = total_loss / len(evaluation_dataloader.dataset) # Average loss per sample
     final_accuracy = accuracy.compute().item()
     final_f1 = f1_score.compute().item()
     final_precision = precision.compute().item()
     final_recall = recall.compute().item()
     final_conf_matrix = confusion_matrix.compute().cpu().numpy() 
 
-    return validation_loss, final_accuracy, final_f1, final_precision, final_recall, final_conf_matrix
+    return final_evaluation_loss, final_accuracy, final_f1, final_precision, final_recall, final_conf_matrix
 
 def save_model(model, epoch, save_dir, verbose: bool = True):    
     model_type = type(model).__name__
@@ -148,20 +153,5 @@ def save_training_plots(training_loss_history, validation_loss_history, accuracy
         plt.grid(True)
         plt.savefig(f"results/{eval_metric}.png")
         plt.close()
-
-    # # Plot Validation Metrics
-    # plt.figure(figsize=(12, 6))
-    # plt.plot(epochs, accuracy_history, label="Accuracy", marker="o")
-    # plt.plot(epochs, f1_history, label="F1 Score", marker="s")
-    # plt.plot(epochs, precision_history, label="Precision", marker="^")
-    # plt.plot(epochs, recall_history, label="Recall", marker="d")
-
-    # plt.xlabel("Epochs")
-    # plt.ylabel("Metric Value")
-    # plt.title("Validation Metrics Over Epochs")
-    
-    # plt.grid(True)
-    # plt.savefig(f"results/val_metrics.png")
-    # plt.close()
 
     

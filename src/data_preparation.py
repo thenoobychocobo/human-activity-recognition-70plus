@@ -15,19 +15,20 @@ import torch
 from torch.utils.data import Dataset, Subset
 from sklearn.model_selection import train_test_split
 
-def download_har70plus_dataset(base_dir="data"):
+def download_har70plus_dataset(base_dir: str = "data") -> None:
     """
-    Downloads the HAR70+ dataset from the 
-    [UCI repository](https://archive.ics.uci.edu/static/public/780/har70.zip)
-    and extracts it.
-    
+    Downloads and extracts the HAR70+ dataset from the 
+    [UCI repository](https://archive.ics.uci.edu/static/public/780/har70.zip).
+
+    Args:
+        base_dir (str, optional): Directory where the dataset should be stored. Defaults to "data".
+
     Raises:
-        RuntimeError: If the download fails.
+        RuntimeError: If the dataset download fails.
     """
-    os.makedirs(base_dir, exist_ok=True)
+    os.makedirs(base_dir, exist_ok=True) # Create base directory
     url = "https://archive.ics.uci.edu/static/public/780/har70.zip"
     zip_path = os.path.join(base_dir, "har70.zip")
-    #extract_folder = "data"
     extract_folder = os.path.join(base_dir, "har70plus")
 
     # Skip download if the zip file already exists
@@ -53,10 +54,18 @@ def download_har70plus_dataset(base_dir="data"):
             zip_ref.extractall(base_dir)
         print(f"✅ Files extracted to: {extract_folder}")
 
-def load_har70_csv_files(base_dir="data") -> pd.DataFrame:
+def load_har70_csv_files(base_dir: str = "data") -> pd.DataFrame:
     """
-    Loads all 18 HAR70+ dataset `.csv` files from `data/har70plus`.
-    Remaps the class labels.
+    Loads and combines all 18 HAR70+ dataset `.csv` files into a single DataFrame. 
+
+    Args:
+        base_dir (str, optional): Base directory containing the extracted dataset. Defaults to "data".
+
+    Raises:
+        FileNotFoundError: If the `har70plus` dataset folder is not found or if there are missing `.csv` files.
+
+    Returns:
+        pd.DataFrame: Combined DataFrame containing all subject data.
     """
     dataset_folder = os.path.join(base_dir, "har70plus")
     
@@ -91,6 +100,9 @@ def load_har70_csv_files(base_dir="data") -> pd.DataFrame:
     return df_compiled
 
 class HARDataset(Dataset):
+    """
+    PyTorch Dataset for handling HAR70+ time series data with sequence processing.
+    """
     def __init__(
         self, 
         df: pd.DataFrame, 
@@ -98,6 +110,15 @@ class HARDataset(Dataset):
         stride: int = 50, 
         gap_threshold: float = 0.05
     ):
+        """
+        Construct a `HARDataset` instance.
+
+        Args:
+            df (pd.DataFrame): Input dataframe containing sensor data from HAR70+ dataset.
+            sequence_size (int, optional): Number of time steps in each sequence (sliding window size). Defaults to 100.
+            stride (int, optional): Step size for moving the sliding window. Defaults to 50.
+            gap_threshold (float, optional): Threshold (in seconds) to identify gaps in data. Defaults to 0.05.
+        """
         self.sequence_size = sequence_size 
         self.stride = stride
         self.gap_threshold = gap_threshold  
@@ -135,10 +156,21 @@ class HARDataset(Dataset):
         self.feature_cols = ['back_x', 'back_y', 'back_z', 'thigh_x', 'thigh_y', 'thigh_z']
         self.label_col = 'label'
 
-    def __len__(self):
+    def __len__(self) -> int:
+        """Returns total number of sequences in dataset."""
         return len(self.sequence_start_indices)
 
-    def __getitem__(self, idx):
+    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Retrieves a sequence of sensor readings and its corresponding label (the activity label of the last time step).
+
+        Args:
+            idx (int): Index of the sequence to be retrieved.
+
+        Returns:
+            Tuple[torch.Tensor, torch.Tensor]: Tuple containing the sequence tensor X with shape 
+                (sequence_size, num_features), and label tensor y. 
+        """
         # PyTorch DataLoader designed to work with datasets where __getitem__ only handles single indices (like here)
         start_idx = self.sequence_start_indices[idx]
         window_data = self.df.iloc[start_idx: start_idx + self.sequence_size]
@@ -148,18 +180,36 @@ class HARDataset(Dataset):
     
 # Normalization Utils
 class Normalizer:
+    """Normalization utility for standardizing input features."""
     def __init__(self, mean: float = 0.0, std: float = 0.0):
+        """
+        Constructs a `Normalizer` instance.
+
+        Args:
+            mean (float, optional): Mean value for normalization. Defaults to 0.0.
+            std (float, optional): Standard deviation value for normalization. Defaults to 0.0.
+        """
         self.mean = mean
         self.std = std
         
-    def __call__(self, x):
+    def __call__(self, x: torch.Tensor) -> torch.Tensor:
+        """Applies normalization to input tensor."""
         # x is of shape (x - self.mean) / self.std
-        x_norm = (x - self.mean) / self.std
+        x_norm = (x - self.mean) / (self.std + 1e-8)
         return x_norm
     
-    def fit(self, training_dataset: HARDataset):
-        # Compute normalization statistics from training dataset
-            
+    def fit(self, training_dataset: HARDataset) -> Dict[str, torch.Tensor]:
+        """
+        Compute the mean and standard deviation of the input training dataset for future normalization. Returns the two
+        values and also updates its corresponding attributes.
+
+        Args:
+            training_dataset (HARDataset): Training dataset to compute statistics from.
+
+        Returns:
+            Dict[str, torch.Tensor]: Dictionary containing computed mean and standard deviation values.
+        """
+        # Compute normalization statistics from given training dataset
         all_features = [
             training_dataset[i][0] # X of shape (window_size, num_features)
             for i in range(len(training_dataset))
@@ -171,18 +221,39 @@ class Normalizer:
         # Compute mean and std per feature
         self.mean = torch.mean(all_features, dim=0)  # Shape: (num_features,)
         self.std = torch.std(all_features, dim=0) + 1e-8  # Shape: (num_features,)
-        
         return {'mean': self.mean, 'std': self.std}
     
 class HARDatasetNormalized(Dataset):
-    def __init__(self, dataset: HARDataset, normalizer: Normalizer = None):
+    """Wrapper for `HARDataset` that applies normalization."""
+    def __init__(self, dataset: HARDataset | Subset, normalizer: Normalizer):
+        """
+        Constructs a `HARDatasetNormalized` instance.
+
+        Args:
+            dataset (HARDataset | Subset): Dataset object to wrap around.
+            normalizer (Normalizer): Normalizer object that has the computed mean and standard deviation of
+                training dataset for normalization.
+        """
         self.dataset = dataset
         self.normalizer = normalizer
         
-    def __len__(self):
+    def __len__(self) -> int:
+        """Returns the number of sequences in the dataset."""
         return len(self.dataset)
     
-    def __getitem__(self, idx):
+    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Retrieves a sequence of sensor readings and its corresponding label (the activity label of the last time step)
+        from the wrapped dataset. It then normalizes the input features (sequence tensor) X using the training set's 
+        mean and standard deviation (via `Normalizer`).
+
+        Args:
+            idx (int): Index of the sequence to be retrieved.
+
+        Returns:
+            Tuple[torch.Tensor, torch.Tensor]: Tuple containing the normalized sequence tensor X with shape 
+                (sequence_size, num_features), and label tensor y. 
+        """
         X, y = self.dataset[idx]
         if self.normalizer:
             X = self.normalizer(X)
@@ -201,21 +272,37 @@ def prepare_datasets(
     load_if_exists: bool = True
 ) -> Tuple[HARDatasetNormalized, HARDatasetNormalized, HARDatasetNormalized, Dict[str, torch.Tensor]]:
     """
-    Prepares train, validation, and test normalized datasets for HAR70+ data. 
+    Prepares train, validation, and test normalized datasets for HAR70+ data. On the first run, it will download the
+    HAR70+ dataset and compile the data such that each sample is a sequence of sensor data over the specified number of
+    time steps, with the label of the sequence being the activity label of the last time step. This data is split into 
+    training, validation, and test datasets in a stratified manner based on activity labels of each sequence. The mean
+    and standard deviation of the training set is computed for the purposes of normalization. This function then returns
+    the three datasets as `HARDatasetNormalized` objects, which automatically normalize the data using the training data
+    statistics. It also returns said normalization parameters.
+    
+    Importantly, this function will save the pre-split compiled `HARDataset` object, the normalization parameters (the 
+    computed training data statistics), and the indices for each split into the specified directory. When the function
+    is ran, it will first check whether these already exist in the specified directory and will use them to avoid 
+    recomputation (unless `load_if_exists` is `False`).
 
     Args:
-        sequence_size (int, optional): Size of each sequence (sliding window over time steps). Defaults to 100.
-        stride (int, optional): Stride for the sliding window. Defaults to 50.
-        gap_threshold (float, optional): Maximum allowed difference (in seconds) between consecutive samples. Defaults to 0.05.
-        train_ratio (float, optional): Proportion of the dataset to include in the train split. Defaults to 0.7.
-        val_ratio (float, optional): Proportion of the dataset to include in the validation split. Defaults to 0.15.
-        test_ratio (float, optional): Proportion of the dataset to include in the test split. Defaults to 0.15.
+        sequence_size (int, optional): Number of time steps in each sequence (sliding window size). Defaults to 100.
+        stride (int, optional): Step size for moving the sliding window. Defaults to 50.
+        gap_threshold (float, optional): Maximum allowed difference (in seconds) between consecutive samples. 
+            Defaults to 0.05.
+        train_ratio (float, optional): Proportion of the dataset to include in the train split. Defaults to 0.8.
+        val_ratio (float, optional): Proportion of the dataset to include in the validation split. Defaults to 0.1.
+        test_ratio (float, optional): Proportion of the dataset to include in the test split. Defaults to 0.1.
         random_state (int, optional): Random seed for reproducibility. Defaults to 42.
+        data_dir (str, optional): Directory that contains the data. Defaults to "data".
         save_dir (str, optional): Directory to save/load components. Defaults to "saved_components".
-        load_if_exists (bool, optional): If True, loads saved components if they exists; otherwise, recomputes. Defaults to True.
+        load_if_exists (bool, optional): If True, loads saved components if they exists; otherwise, recomputes. 
+            Defaults to True.
 
     Returns:
-        Tuple[HARDatasetNormalized, HARDatasetNormalized, HARDatasetNormalized, Dict[str, torch.Tensor]]: _description_
+        Tuple[HARDatasetNormalized, HARDatasetNormalized, HARDatasetNormalized, Dict[str, torch.Tensor]]: Tuple 
+            containing the normalized train, validation, and test sets, along with a dictionary containing the
+            normalization statistics (the mean and standard deviation computed from the train set), all in that order. 
     """
 
     # Create save directory if it doesn't exist
