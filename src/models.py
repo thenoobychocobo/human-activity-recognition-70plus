@@ -10,6 +10,7 @@ from abc import ABC, abstractmethod
 import torch
 import torch.nn as nn
 
+
 class HarBaseModel(nn.Module, ABC):
     """
     Abstract base class for Human Activity Recognition (HAR) models, designed for HAR70+ dataset.
@@ -57,6 +58,7 @@ class HarBaseModel(nn.Module, ABC):
         """
         pass    
 
+
 class HarLSTM(HarBaseModel):
     """LSTM-based model for Human Activity Recognition on HAR70+ dataset."""
     def __init__(
@@ -88,6 +90,7 @@ class HarLSTM(HarBaseModel):
         logits = self.fc(hn[-1]) # hn[-1] is the hidden state of the final layer for the final time step
         return logits
     
+
 class HarGRU(HarBaseModel):
     """GRU-based model for Human Activity Recognition on HAR70+ dataset."""
     def __init__(
@@ -117,4 +120,71 @@ class HarGRU(HarBaseModel):
         # Ignore all intermediate hidden states
         outputs, hn = self.rnn(input_seq) # hn is the hidden state of the final time step
         logits = self.fc(hn[-1]) # hn[-1] is the hidden state of the final layer for the final time step
+        return logits
+   
+    
+class HarTransformer(HarBaseModel):
+    """Transformer-based model for Human Activity Recognition on HAR70+ dataset."""
+    def __init__(
+        self, 
+        input_size: int = 6, 
+        hidden_size: int = 30,
+        num_layers: int = 2,  # Number of Transformer encoder layers
+        num_heads: int = 2,   # Number of attention heads
+        dropout_prob: float = 0.1, 
+        num_classes: int = 7,
+        device: Optional[torch.device] = None
+    ):
+        super(HarTransformer, self).__init__(input_size, hidden_size, num_layers, dropout_prob, num_classes, device)
+        self.num_heads = num_heads
+        
+        # Embedding layer to project input features to hidden_size
+        self.embedding = nn.Linear(self.input_size, self.hidden_size)
+        
+        # Positional encoding to inject sequence order information
+        self.positional_encoding = nn.Parameter(torch.zeros(1, 1000, self.hidden_size))  # Max sequence length = 1000
+        
+        # Transformer encoder
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=self.hidden_size,
+            nhead=self.num_heads,
+            dropout=self.dropout_prob,
+            batch_first=True
+        )
+        self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=self.num_layers)
+        
+        # Fully connected layer for classification
+        self.fc = nn.Linear(hidden_size, num_classes)
+        
+        # Move model to device
+        self.to(self.device)
+        print(f"{type(self).__name__} model loaded on {self.device}.")
+
+    def forward(self, input_seq: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass of the Transformer-based HAR model.
+
+        Args:
+            input_seq (torch.Tensor): Input tensor of shape (batch_size, seq_len, input_size).
+
+        Returns:
+            torch.Tensor: Logits of shape (batch_size, num_classes).
+        """
+        batch_size, seq_len, _ = input_seq.shape
+        
+        # 1) Embed the input features
+        embedded = self.embedding(input_seq)  # (batch_size, seq_len, hidden_size)
+        
+        # 2) Add positional encoding
+        embedded += self.positional_encoding[:, :seq_len, :]
+        
+        # 3) Pass through Transformer encoder
+        transformer_output = self.transformer_encoder(embedded)  # (batch_size, seq_len, hidden_size)
+        
+        # 4) Use the output of the final time step for classification
+        final_output = transformer_output[:, -1, :]  # (batch_size, hidden_size)
+        
+        # 5) Pass through fully connected layer
+        logits = self.fc(final_output)  # (batch_size, num_classes)
+        
         return logits
