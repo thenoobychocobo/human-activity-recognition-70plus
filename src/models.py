@@ -123,7 +123,7 @@ class HarGRU(HarBaseModel):
         return logits
    
     
-class HarTransformer(HarBaseModel):
+class HarTransformerRyan(HarBaseModel):
     """Transformer-based model for Human Activity Recognition on HAR70+ dataset."""
     def __init__(
         self, 
@@ -188,3 +188,46 @@ class HarTransformer(HarBaseModel):
         logits = self.fc(final_output)  # (batch_size, num_classes)
         
         return logits
+    
+class HarTransformer(nn.Module):
+    """Transformer model for Human Activity Recognition on HAR70+ dataset."""
+    def __init__(
+        self, 
+        input_dim: int = 6,
+        # TODO: d_model and nhead are hyperparameters
+        d_model: int = 30, 
+        nhead: int = 3,
+        num_layers: int = 1,
+        num_classes = 7,
+        device: Optional[torch.device] = None
+    ):
+        super().__init__()
+        self.d_model = d_model
+        self.nhead = nhead
+        self.num_layers = num_layers
+        self.num_classes = num_classes
+        self.device = device if device else torch.device("cpu")
+        self.input_projection = nn.Linear(input_dim, d_model) 
+
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=self.d_model, 
+            nhead=self.nhead
+        )
+        self.transformer_encoder = nn.TransformerEncoder(
+            encoder_layer=encoder_layer,
+            num_layers=self.num_layers,
+        )
+        self.fc = nn.Linear(self.d_model, self.num_classes)
+        
+        # Move model to device
+        self.to(self.device)
+        print(f"{type(self).__name__} model loaded on {self.device}.")
+
+    def forward(self, input_seq):
+        # Projection to the d_model dimensions
+        projected_input = self.input_projection(input_seq)
+        # Encodes information of hidden states for all timesteps where each hidden state for a timestep is affected by *all* other timesteps.
+        encoded = self.transformer_encoder(projected_input) # The output (batch_size,seq_len,d_model) where each timestep has a size d_model of hidden states
+        pooled = encoded.mean(dim=1) # We need to aggregate the sequence information into a single vector.
+        output = self.fc(pooled)
+        return output
