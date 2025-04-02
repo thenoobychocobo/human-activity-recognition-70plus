@@ -219,6 +219,7 @@ def save_training_plots_and_metric_history(
     precision_history: List[float], 
     recall_history: List[float], 
     model_name: str,
+    figsize: Tuple[float, float] = (7.0, 4.0),
     base_dir: str = "results"
 ) -> None:
     """
@@ -232,7 +233,8 @@ def save_training_plots_and_metric_history(
         f1_history (List[float]): History of F1 score values.
         precision_history (List[float]): History of precision values.
         recall_history (List[float]): History of recall values.
-        model_name (str): Name of model (only for the subdirectory name)
+        model_name (str): Name of model (only for the subdirectory name).
+        figsize (Tuple[float, float]): Width, height of plots in inches. Defaults to (7.0, 4.0). 
         base_dir (str, optional): Directory to save plots and histories of metrics in. Defaults to "results".
     """
     # Create subdirectory to save metric histories and the plots to. 
@@ -249,7 +251,7 @@ def save_training_plots_and_metric_history(
 
     # Create and save the plots
     for i, eval_metric in enumerate(eval_metric_names):
-        plt.figure(figsize=(10, 5))
+        plt.figure(figsize=figsize)
         plt.plot(epochs, eval_metrics[i], label=eval_metric, color="red", marker="o")
         plt.xlabel("Epochs")
         plt.ylabel(eval_metric)
@@ -258,6 +260,7 @@ def save_training_plots_and_metric_history(
         plt.grid(True)
         plot_path = os.path.join(save_dir, f"{eval_metric}.png")
         plt.savefig(plot_path)
+        plt.show() # Display plot
         plt.close()
     print(f"✅ Plots saved to: {save_dir}")
         
