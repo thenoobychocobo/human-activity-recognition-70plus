@@ -8,6 +8,7 @@ from abc import ABC, abstractmethod
 
 # Libs
 import torch
+import math
 import torch.nn as nn
 
 
@@ -123,16 +124,17 @@ class HarGRU(HarBaseModel):
         return logits
    
     
-class HarTransformerRyan(HarBaseModel):
+class HarTransformer(HarBaseModel):
     """Transformer-based model for Human Activity Recognition on HAR70+ dataset."""
     def __init__(
         self, 
         input_size: int = 6, 
-        hidden_size: int = 30,
+        hidden_size: int = 30, # d_model
         num_layers: int = 2,  # Number of Transformer encoder layers
         num_heads: int = 2,   # Number of attention heads
         dropout_prob: float = 0.1, 
         num_classes: int = 7,
+        max_sequence_length: int = 5000,
         device: Optional[torch.device] = None
     ):
         super(HarTransformer, self).__init__(input_size, hidden_size, num_layers, dropout_prob, num_classes, device)
@@ -140,20 +142,28 @@ class HarTransformerRyan(HarBaseModel):
         
         # Embedding layer to project input features to hidden_size
         self.embedding = nn.Linear(self.input_size, self.hidden_size)
+        # Note: nn.Embedding layer is usually used for embedding categorical variables
         
         # Positional encoding to inject sequence order information
-        self.positional_encoding = nn.Parameter(torch.zeros(1, 1000, self.hidden_size))  # Max sequence length = 1000
+        self.positional_encoder = PositionalEncoding(
+            d_model=hidden_size, 
+            dropout=dropout_prob, 
+            max_len=max_sequence_length
+        )
         
-        # Transformer encoder
+        # Single encoder
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=self.hidden_size,
             nhead=self.num_heads,
             dropout=self.dropout_prob,
             batch_first=True
         )
+        
+        # Stack of N encoders
         self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=self.num_layers)
         
         # Fully connected layer for classification
+        # We use the embedding vector (hidden state) of the final time step to predict the class
         self.fc = nn.Linear(hidden_size, num_classes)
         
         # Move model to device
@@ -173,61 +183,48 @@ class HarTransformerRyan(HarBaseModel):
         batch_size, seq_len, _ = input_seq.shape
         
         # 1) Embed the input features
-        embedded = self.embedding(input_seq)  # (batch_size, seq_len, hidden_size)
+        embedded = self.embedding(input_seq) # (batch_size, seq_len, hidden_size)
         
         # 2) Add positional encoding
-        embedded += self.positional_encoding[:, :seq_len, :]
+        embedded = self.positional_encoder(embedded)
+        # embedded += self.positional_encoding[:, :seq_len, :]
         
-        # 3) Pass through Transformer encoder
-        transformer_output = self.transformer_encoder(embedded)  # (batch_size, seq_len, hidden_size)
+        # 3) Pass through Transformer encoders (we get refined, contextualized time step embeddings)
+        transformer_output = self.transformer_encoder(embedded) # (batch_size, seq_len, hidden_size)
         
         # 4) Use the output of the final time step for classification
-        final_output = transformer_output[:, -1, :]  # (batch_size, hidden_size)
+        final_timestep_hidden_state = transformer_output[:, -1, :]  # (batch_size, hidden_size)
         
         # 5) Pass through fully connected layer
-        logits = self.fc(final_output)  # (batch_size, num_classes)
+        logits = self.fc(final_timestep_hidden_state)  # (batch_size, num_classes)
         
         return logits
     
-class HarTransformer(nn.Module):
-    """Transformer model for Human Activity Recognition on HAR70+ dataset."""
-    def __init__(
-        self, 
-        input_dim: int = 6,
-        # TODO: d_model and nhead are hyperparameters
-        d_model: int = 30, 
-        nhead: int = 3,
-        num_layers: int = 1,
-        num_classes = 7,
-        device: Optional[torch.device] = None
-    ):
+class PositionalEncoding(nn.Module):
+    """
+    Adds positional encodings to input sequences to inject information about token positions. 
+    This class uses sinusoidal functions (sine and cosine) to generate encodings, following the original Transformer 
+    architecture. The encodings are added to the input embeddings, and dropout is applied for regularization.
+    
+    Code taken from an 
+    [official PyTorch tutorial](https://pytorch-tutorials-preview.netlify.app/beginner/transformer_tutorial.html).
+    """
+
+    def __init__(self, d_model: int, dropout: float = 0.1, max_len: int = 5000):
         super().__init__()
-        self.d_model = d_model
-        self.nhead = nhead
-        self.num_layers = num_layers
-        self.num_classes = num_classes
-        self.device = device if device else torch.device("cpu")
-        self.input_projection = nn.Linear(input_dim, d_model) 
+        self.dropout = nn.Dropout(p=dropout)
 
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model=self.d_model, 
-            nhead=self.nhead
-        )
-        self.transformer_encoder = nn.TransformerEncoder(
-            encoder_layer=encoder_layer,
-            num_layers=self.num_layers,
-        )
-        self.fc = nn.Linear(self.d_model, self.num_classes)
-        
-        # Move model to device
-        self.to(self.device)
-        print(f"{type(self).__name__} model loaded on {self.device}.")
+        position = torch.arange(max_len).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2) * (-math.log(10000.0) / d_model))
+        pe = torch.zeros(max_len, 1, d_model)
+        pe[:, 0, 0::2] = torch.sin(position * div_term)
+        pe[:, 0, 1::2] = torch.cos(position * div_term)
+        self.register_buffer('pe', pe)
 
-    def forward(self, input_seq):
-        # Projection to the d_model dimensions
-        projected_input = self.input_projection(input_seq)
-        # Encodes information of hidden states for all timesteps where each hidden state for a timestep is affected by *all* other timesteps.
-        encoded = self.transformer_encoder(projected_input) # The output (batch_size,seq_len,d_model) where each timestep has a size d_model of hidden states
-        pooled = encoded.mean(dim=1) # We need to aggregate the sequence information into a single vector.
-        output = self.fc(pooled)
-        return output
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Arguments:
+            x: Tensor, shape ``[seq_len, batch_size, embedding_dim]``
+        """
+        x = x + self.pe[:x.size(0)]
+        return self.dropout(x)
