@@ -180,7 +180,6 @@ class HarTransformer(HarBaseModel):
         Returns:
             torch.Tensor: Logits of shape (batch_size, num_classes).
         """
-        batch_size, seq_len, _ = input_seq.shape
         
         # 1) Embed the input features
         embedded = self.embedding(input_seq) # (batch_size, seq_len, hidden_size)

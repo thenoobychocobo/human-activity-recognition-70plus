@@ -13,12 +13,13 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader
+from torch.utils.data import Dataset, DataLoader, Subset, ConcatDataset
 import torchmetrics
+from sklearn.model_selection import StratifiedKFold
 
 # Custom
 from src.models import HarBaseModel
-from src.data_preparation import Normalizer
+from src.data_preparation import Normalizer, HARDataset
 
 
 def train_HAR70_model(
@@ -27,7 +28,7 @@ def train_HAR70_model(
     train_dataloader: DataLoader,
     validation_dataloader: DataLoader,
     num_epochs: int = 15,
-    base_dir: str = "models",
+    base_dir: Optional[str] = "models",
     save_interval: int = 5, 
     verbose: bool = True
 ) -> Tuple[List[float], List[float], List[float], List[float], List[float], List[float], Normalizer]:
@@ -42,7 +43,8 @@ def train_HAR70_model(
         train_dataloader (DataLoader): Data loader with training dataset.
         validation_dataloader (DataLoader): Data loader with validation dataset.
         num_epochs (int, optional): Number of epochs to train model with. Defaults to 15.
-        base_dir (str, optional): Directory where model parameters will be saved to. Defaults to "models".
+        base_dir (Optional[str], optional): Directory where model parameters will be automatically saved to. If set to 
+            None, then automatic saving of models is disabled. Defaults to "models".
         save_interval (int, optional): The interval (in epochs) after which the model will be saved, i.e., the model 
             will be saved every x epochs. Defaults to 5.
         verbose (bool, optional): Whether to print the model's validation metrics after each training epoch. 
@@ -57,14 +59,15 @@ def train_HAR70_model(
     criterion = nn.CrossEntropyLoss()
     training_loss_history, validation_loss_history, accuracy_history, f1_history, precision_history, recall_history = [], [], [], [], [], []
     
-    # Create subdirectory to save models to during training session
-    os.makedirs(base_dir, exist_ok=True)
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S") # Use timestamp as subdirectory name
-    model_type = type(model).__name__
-    subdirectory_name = f"{model_type}_{timestamp}"
-    save_dir = os.path.join(base_dir, subdirectory_name) # Subdirectory
-    if verbose: print(f"(1) Creating subdirectory ({save_dir}) for saving model params...")
-    os.makedirs(save_dir, exist_ok=True)
+    # Create subdirectory to automatically save models to during training session
+    if base_dir is not None:
+        os.makedirs(base_dir, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S") # Use timestamp as subdirectory name
+        model_type = type(model).__name__
+        subdirectory_name = f"{model_type}_{timestamp}"
+        save_dir = os.path.join(base_dir, subdirectory_name) # Subdirectory
+        if verbose: print(f"(1) Creating subdirectory ({save_dir}) for saving model params...")
+        os.makedirs(save_dir, exist_ok=True)
     
     # Additionally, track model with best validation f1 score (for saving)
     current_best_f1 = -1
@@ -121,16 +124,18 @@ def train_HAR70_model(
             print(f"(Training) Loss: {training_loss:.4f}")
             print(f"(Validation) Loss: {validation_loss:.4f}, Accuracy: {accuracy:.4f}, F1: {f1:.4f}, Precision: {precision:.4f}, Recall: {recall:.4f}")
                 
-        # Save model if it has best validation F1 score
-        if f1 > current_best_f1:
-            current_best_f1 = f1 # Update new current best f1 score
-            model_filename = f"{model_type}_best_F1.pth"
-            save_model(model, model_filename, save_dir, verbose=verbose)
-        
-        # Save model after every specified number of epochs
-        if epoch % save_interval == 0:
-            model_filename = f"{model_type}_epoch{epoch}.pth"
-            save_model(model, model_filename, save_dir, verbose=verbose)
+        # Automatic model saving
+        if base_dir is not None:
+            # Save model if it has best validation F1 score
+            if f1 > current_best_f1:
+                current_best_f1 = f1 # Update new current best f1 score
+                model_filename = f"{model_type}_best_F1.pth"
+                save_model(model, model_filename, save_dir, verbose=verbose)
+            
+            # Save model after every specified number of epochs
+            if epoch % save_interval == 0:
+                model_filename = f"{model_type}_epoch{epoch}.pth"
+                save_model(model, model_filename, save_dir, verbose=verbose)
             
         if verbose: print("="*90) # Purely visual
 
@@ -279,4 +284,128 @@ def save_training_plots_and_metric_history(
     torch.save(metric_histories, history_path)
     print(f"✅ Metric histories saved to: {history_path}")
 
+def split_dataset_into_stratified_kfolds(
+    dataset: Dataset,
+    k: int,
+    random_state: Optional[int],
+    shuffle: bool
+) -> List[Subset]:
+    """
+    Splits dataset into K-folds (stratified).
+
+    Args:
+        dataset (Dataset): Dataset to be split.
+        k (int): Number of folds (splits).
+        random_state (Optional[int]): Random seed for reproducibility.
+        shuffle (bool): Whether to shuffle the dataset before splitting into folds.
+    """
+    labels = np.array([dataset[i][1] for i in range(len(dataset))]) # Extract labels
+    skf = StratifiedKFold(n_splits=k, shuffle=shuffle, random_state=random_state)
+    k_folds: List[Subset] = []
+    for _, val_idx in skf.split(np.arange(len(dataset)), labels):
+        k_folds.append(Subset(dataset, val_idx)) # Each fold is a PyTorch Subset
+        
+    return k_folds
+
+def kfold_stratified_cv_for_har(
+    dataset: HARDataset, 
+    model_class: Type[HarBaseModel],
+    optimizer_class: Type[torch.optim.Optimizer],
+    k: int = 5, 
+    batch_size: int = 128,
+    num_epochs: int = 15,
+    model_kwargs: Optional[Dict[str, Any]] = None,
+    optimizer_kwargs: Optional[Dict[str, Any]] = None,
+    base_dir: Optional[str] = "models", 
+    random_state: Optional[int] = None,
+    shuffle: bool = True
+) -> Tuple[float, float, float, float]:
+    """
+    Perform Stratified K-Fold Cross Validation for HAR model training and evaluation.
+
+    Args:
+        dataset (HARDataset): HAR Dataset containing data and labels.
+        model_class (Type[HarBaseModel]): The class of the HAR model (subclass of `HarBaseModel`) to instantiate.
+        optimizer_class (Type[torch.optim.Optimizer]): The optimizer class to use (e.g. `torch.optim.Adam`).
+        k (int, optional): Number of folds (splits). Defaults to 5.
+        batch_size (int, optional): Batch size for training and validation dataloaders. Defaults to 128.
+        num_epochs (int, optional): Number of epochs for training each fold. Defaults to 15.
+        model_kwargs (Optional[Dict[str, Any]], optional): A dictionary of additional keyword arguments for model 
+            instantiation (passed to model class constructor). Defaults to None, which will initialize an empty 
+            dictionary.
+        optimizer_kwargs (Optional[Dict[str, Any]], optional): A dcitionary of additional keyword arguments for
+            optimizer instantiation (passed to optimizer class constructor). Defaults to None, which will initialize an
+            empty dictionary.
+        base_dir (Optional[str], optional): Directory where parameters of models evaluated on each fold are saved to.
+            If set to None, model saving will be disabled. Defaults to "models".  
+        random_state (Optional[int], optional): Random seed for reproducibility. Defaults to None.
+        shuffle (bool, optional): Whether to shuffle the dataset before splitting into folds. Defaults to True.
+
+    Returns:
+        Tuple[float, float, float, float]: A tuple containing the mean accuracy, F1 score, precision, and recall across
+            all k folds.
+    """
+    model_kwargs = model_kwargs or {}
+    optimizer_kwargs = optimizer_kwargs or {}
     
+    # 1) Split dataset into K folds        
+    k_folds = split_dataset_into_stratified_kfolds(dataset, k, random_state, shuffle)
+    
+    # 2) Store metric results across folds
+    accuracy_results, f1_results, precision_results, recall_results = [], [], [], [] 
+    
+    # 3) Prepare directory to save params of models evaluated on each fold
+    if base_dir is not None:
+        os.makedirs(base_dir, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S") # Use timestamp as subdirectory name
+        model_type = model_class.__name__
+        subdirectory_name = f"KFoldCV_{model_type}_{timestamp}"
+        save_dir = os.path.join(base_dir, subdirectory_name) # Subdirectory
+        os.makedirs(save_dir, exist_ok=True)
+    
+    # 4) In each iteration, one fold is assigned as validation data, while model is trained on remaining folds
+    for i in range(k):
+        print(f"Fold [{i+1}/{k}]")
+        # a) Designate the training data and the validation data for this iteration
+        validation_dataset = k_folds[i] # 1 fold used for validation
+        validation_dataloader = DataLoader(validation_dataset, batch_size = batch_size, shuffle = True)
+        train_dataset = ConcatDataset([k_folds[j] for j in range(k) if j != i]) # remaining k-1 folds for training
+        train_dataloader = DataLoader(train_dataset, batch_size = batch_size, shuffle = True)
+        
+        # b) Re-initialize the model during each iteration
+        model = model_class(**model_kwargs)
+        
+        # c) Re-initialize the optimizer during each iteration
+        optimizer = optimizer_class(model.parameters(), **optimizer_kwargs)
+        
+        # d) Train model
+        training_output = train_HAR70_model(
+            model, optimizer, train_dataloader, validation_dataloader,
+            num_epochs=num_epochs,
+            base_dir=None, # Disable automatic model saving - we will save model params manually
+            verbose=False
+        )
+        _, _, accuracy_history, f1_history, precision_history, recall_history, _ = training_output
+        accuracy, f1, precision, recall = accuracy_history[-1], f1_history[-1], precision_history[-1], recall_history[-1]
+        accuracy_results.append(accuracy)
+        f1_results.append(f1)
+        precision_results.append(precision)
+        recall_results.append(recall)
+        print(f"Accuracy: {accuracy:.4f}, F1: {f1:.4f}, Precision: {precision:.4f}, Recall: {recall:.4f}")
+        
+        # e) Save final model for this iteration
+        if base_dir is not None: # model saving enabled
+            model_filename = f"fold_{i+1}.pth"
+            save_model(model, model_filename, save_dir, verbose=False)
+        
+    # Compute mean metrics over all folds
+    print(f"Final results (mean over {k} folds)")
+    mean_accuracy = np.mean(accuracy_results)
+    mean_f1 = np.mean(f1_results)
+    mean_precision = np.mean(precision_results)
+    mean_recall = np.mean(recall_results)
+    print(f"Accuracy: {mean_accuracy:.4f}, F1: {mean_f1:.4f}, Precision: {mean_precision:.4f}, Recall: {mean_recall:.4f}")
+    
+    return mean_accuracy, mean_f1, mean_precision, mean_recall
+        
+        
