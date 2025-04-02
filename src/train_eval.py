@@ -18,6 +18,7 @@ import torchmetrics
 
 # Custom
 from src.models import HarBaseModel
+from src.data_preparation import Normalizer
 
 
 def train_HAR70_model(
@@ -27,11 +28,13 @@ def train_HAR70_model(
     validation_dataloader: DataLoader,
     num_epochs: int = 15,
     base_dir: str = "models",
+    save_interval: int = 5, 
     verbose: bool = True
-) -> Tuple[List[float], List[float], List[float], List[float], List[float], List[float]]:
+) -> Tuple[List[float], List[float], List[float], List[float], List[float], List[float], Normalizer]:
     """
     Trains the given model on provided HAR70+ dataset (via dataloaders). Will evaluate the model's performance on the
-    validation set every epoch. Saves the model's parameters every 5 epochs in specified base directory.
+    validation set every epoch. Model's parameters are saved after each specified number of epochs in the specified 
+    base directory. The best performing model (f1) is also saved.
 
     Args:
         model (HarBaseModel): HAR model to train.
@@ -40,14 +43,17 @@ def train_HAR70_model(
         validation_dataloader (DataLoader): Data loader with validation dataset.
         num_epochs (int, optional): Number of epochs to train model with. Defaults to 15.
         base_dir (str, optional): Directory where model parameters will be saved to. Defaults to "models".
+        save_interval (int, optional): The interval (in epochs) after which the model will be saved, i.e., the model 
+            will be saved every x epochs. Defaults to 5.
         verbose (bool, optional): Whether to print the model's validation metrics after each training epoch. 
             Defaults to True.
             
     Returns:
-        Tuple[List[float], List[float], List[float], List[float], List[float], List[float]]: A tuple containing the 
-            history (values per epoch) for: training loss, validation loss, accuracy, f1, precision, and recall. Last 
-            element is the confusion matrix of the final model.
+        Tuple[List[float], List[float], List[float], List[float], List[float], List[float], Normalizer]: A tuple 
+            containing the history (values per epoch) for: training loss, validation loss, accuracy, f1, precision, 
+            and recall, along with a `Normalizer` already fitted on the training data. 
     """
+    if verbose: print("Beginning training session...")
     criterion = nn.CrossEntropyLoss()
     training_loss_history, validation_loss_history, accuracy_history, f1_history, precision_history, recall_history = [], [], [], [], [], []
     
@@ -57,11 +63,20 @@ def train_HAR70_model(
     model_type = type(model).__name__
     subdirectory_name = f"{model_type}_{timestamp}"
     save_dir = os.path.join(base_dir, subdirectory_name) # Subdirectory
+    if verbose: print(f"(1) Creating subdirectory ({save_dir}) for saving model params...")
     os.makedirs(save_dir, exist_ok=True)
     
+    # Additionally, track model with best validation f1 score (for saving)
+    current_best_f1 = -1
+    
+    # Compute normalization statistics from training dataset (used to normalize inputs during inference as well)
+    if verbose: print("(2) Computing normalization statistics from the training dataset...")
+    normalizer = Normalizer()
+    normalizer.fit(training_dataset=train_dataloader.dataset) # computes mean and std of training dataset
+    
     # Training step
-    for epoch in range(num_epochs):
-        epoch += 1 # Account for zero-indexing
+    if verbose: print(f"(3) Beginning training loop ({num_epochs} epochs)...")
+    for epoch in range(1, num_epochs + 1): # indexing starts at 1
         start_time = time.time()
         total_training_loss = 0
         model.train() # Set model to training mode
@@ -73,6 +88,9 @@ def train_HAR70_model(
             input_sequences_batch, target_labels_batch = batch
             input_sequences_batch = input_sequences_batch.to(model.device)
             target_labels_batch = target_labels_batch.to(model.device)
+            
+            # Normalize inputs
+            input_sequences_batch = normalizer(input_sequences_batch)
             
             # Forward pass
             logits = model(input_sequences_batch)
@@ -88,7 +106,7 @@ def train_HAR70_model(
         training_loss = total_training_loss / len(train_dataloader.dataset) # Average loss per sample
         training_loss_history.append(training_loss)
         # 2) Evaluate model on validation set
-        validation_loss, accuracy, f1, precision, recall, conf_matrix = evaluate_HAR70_model(model, validation_dataloader)
+        validation_loss, accuracy, f1, precision, recall, conf_matrix = evaluate_HAR70_model(model, validation_dataloader, normalizer)
         validation_loss_history.append(validation_loss)
         accuracy_history.append(accuracy)
         f1_history.append(f1)
@@ -103,19 +121,26 @@ def train_HAR70_model(
             print(f"(Training) Loss: {training_loss:.4f}")
             print(f"(Validation) Loss: {validation_loss:.4f}, Accuracy: {accuracy:.4f}, F1: {f1:.4f}, Precision: {precision:.4f}, Recall: {recall:.4f}")
                 
-        # Save model every 5 epochs
-        if epoch % 5 == 0:
-            # Create base directory if it does not exist
-            os.makedirs(base_dir, exist_ok=True)
-            save_model(model, epoch, save_dir, verbose=verbose)
+        # Save model if it has best validation F1 score
+        if f1 > current_best_f1:
+            current_best_f1 = f1 # Update new current best f1 score
+            model_filename = f"{model_type}_best_F1.pth"
+            save_model(model, model_filename, save_dir, verbose=verbose)
+        
+        # Save model after every specified number of epochs
+        if epoch % save_interval == 0:
+            model_filename = f"{model_type}_epoch{epoch}.pth"
+            save_model(model, model_filename, save_dir, verbose=verbose)
             
-        if verbose: print("="*90)
+        if verbose: print("="*90) # Purely visual
 
-    return training_loss_history, validation_loss_history, accuracy_history, f1_history, precision_history, recall_history
+    if verbose: print("(4) Training session finished.")
+    return training_loss_history, validation_loss_history, accuracy_history, f1_history, precision_history, recall_history, normalizer
      
 def evaluate_HAR70_model(
     model: HarBaseModel, 
-    evaluation_dataloader: DataLoader
+    evaluation_dataloader: DataLoader,
+    normalizer: Normalizer
 ) -> Tuple[float, float, float, float, float, np.ndarray]:
     """
     Evaluates the model's performance on the given evaluation dataset. 
@@ -123,6 +148,8 @@ def evaluate_HAR70_model(
     Args:
         model (HarBaseModel): Model to evaluate.
         evaluation_dataloader (DataLoader): The dataloader for the evaluation dataset.
+        normalizer (Normalizer): Normalizer object that has already been fitted to training data (i.e. normalization
+            statistics already computed).
 
     Returns:
         Tuple[float, float, float, float, float, np.ndarray]: Tuple containing the model's average evaluation loss 
@@ -141,6 +168,7 @@ def evaluate_HAR70_model(
         for input_sequences, target_labels in evaluation_dataloader:
             input_sequences, target_labels = input_sequences.to(model.device), target_labels.to(model.device)
             
+            input_sequences = normalizer(input_sequences) # Normalize inputs
             logits = model(input_sequences)  # Forward pass
             predictions = torch.argmax(logits, dim=1)  # Convert logits to class labels
 
@@ -165,7 +193,7 @@ def evaluate_HAR70_model(
 
 def save_model(
     model: nn.Module, 
-    epoch: int, 
+    model_filename: str, 
     save_dir: str, 
     verbose: bool = True
 ) -> None:   
@@ -174,12 +202,10 @@ def save_model(
 
     Args:
         model (nn.Module): The model to save.
-        epoch (int): The current epoch number.
+        model_filename (str): Name of model parameter file e.g. `mymodel.pth`.
         save_dir (str): Directory to save model's parameters to.
         verbose (bool, optional): Whether to print a confirmation message. Defaults to True.
     """
-    model_type = type(model).__name__
-    model_filename = f"{model_type}_epoch{epoch}.pth"
     model_path = os.path.join(save_dir, model_filename)
     torch.save(model.state_dict(), model_path) # Save state dictionary
     if verbose: print(f"✅ Model saved: {model_path}")

@@ -178,87 +178,6 @@ class HARDataset(Dataset):
         y = torch.tensor(window_data[self.label_col].values[-1], dtype=torch.long) # Only the label of the last sample in the sequence
         return X, y
     
-# Normalization Utils
-class Normalizer:
-    """Normalization utility for standardizing input features."""
-    def __init__(self, mean: float = 0.0, std: float = 0.0):
-        """
-        Constructs a `Normalizer` instance.
-
-        Args:
-            mean (float, optional): Mean value for normalization. Defaults to 0.0.
-            std (float, optional): Standard deviation value for normalization. Defaults to 0.0.
-        """
-        self.mean = mean
-        self.std = std
-        
-    def __call__(self, x: torch.Tensor) -> torch.Tensor:
-        """Applies normalization to input tensor."""
-        # x is of shape (x - self.mean) / self.std
-        x_norm = (x - self.mean) / (self.std + 1e-8)
-        return x_norm
-    
-    def fit(self, training_dataset: HARDataset) -> Dict[str, torch.Tensor]:
-        """
-        Compute the mean and standard deviation of the input training dataset for future normalization. Returns the two
-        values and also updates its corresponding attributes.
-
-        Args:
-            training_dataset (HARDataset): Training dataset to compute statistics from.
-
-        Returns:
-            Dict[str, torch.Tensor]: Dictionary containing computed mean and standard deviation values.
-        """
-        # Compute normalization statistics from given training dataset
-        all_features = [
-            training_dataset[i][0] # X of shape (window_size, num_features)
-            for i in range(len(training_dataset))
-        ]
-        
-        # Stack all sequences along the time dimension
-        all_features = torch.cat(all_features, dim=0)  # Shape: (total_time_steps, num_features)
-        
-        # Compute mean and std per feature
-        self.mean = torch.mean(all_features, dim=0)  # Shape: (num_features,)
-        self.std = torch.std(all_features, dim=0) + 1e-8  # Shape: (num_features,)
-        return {'mean': self.mean, 'std': self.std}
-    
-class HARDatasetNormalized(Dataset):
-    """Wrapper for `HARDataset` that applies normalization."""
-    def __init__(self, dataset: HARDataset | Subset, normalizer: Normalizer):
-        """
-        Constructs a `HARDatasetNormalized` instance.
-
-        Args:
-            dataset (HARDataset | Subset): Dataset object to wrap around.
-            normalizer (Normalizer): Normalizer object that has the computed mean and standard deviation of
-                training dataset for normalization.
-        """
-        self.dataset = dataset
-        self.normalizer = normalizer
-        
-    def __len__(self) -> int:
-        """Returns the number of sequences in the dataset."""
-        return len(self.dataset)
-    
-    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Retrieves a sequence of sensor readings and its corresponding label (the activity label of the last time step)
-        from the wrapped dataset. It then normalizes the input features (sequence tensor) X using the training set's 
-        mean and standard deviation (via `Normalizer`).
-
-        Args:
-            idx (int): Index of the sequence to be retrieved.
-
-        Returns:
-            Tuple[torch.Tensor, torch.Tensor]: Tuple containing the normalized sequence tensor X with shape 
-                (sequence_size, num_features), and label tensor y. 
-        """
-        X, y = self.dataset[idx]
-        if self.normalizer:
-            X = self.normalizer(X)
-        return X, y
-    
 def prepare_datasets(
     sequence_size: int = 100,
     stride: int = 50,
@@ -270,20 +189,16 @@ def prepare_datasets(
     data_dir: str = "data",
     save_dir: str = "saved_components",
     load_if_exists: bool = True
-) -> Tuple[HARDatasetNormalized, HARDatasetNormalized, HARDatasetNormalized, Dict[str, torch.Tensor]]:
+) -> Tuple[Subset, Subset, Subset]:
     """
-    Prepares train, validation, and test normalized datasets for HAR70+ data. On the first run, it will download the
+    Prepares train, validation, and test datasets for HAR70+ data. On the first run, it will download the
     HAR70+ dataset and compile the data such that each sample is a sequence of sensor data over the specified number of
     time steps, with the label of the sequence being the activity label of the last time step. This data is split into 
-    training, validation, and test datasets in a stratified manner based on activity labels of each sequence. The mean
-    and standard deviation of the training set is computed for the purposes of normalization. This function then returns
-    the three datasets as `HARDatasetNormalized` objects, which automatically normalize the data using the training data
-    statistics. It also returns said normalization parameters.
+    training, validation, and test datasets in a stratified manner based on activity labels of each sequence.
     
-    Importantly, this function will save the pre-split compiled `HARDataset` object, the normalization parameters (the 
-    computed training data statistics), and the indices for each split into the specified directory. When the function
-    is ran, it will first check whether these already exist in the specified directory and will use them to avoid 
-    recomputation (unless `load_if_exists` is `False`).
+    Importantly, this function will save the pre-split compiled `HARDataset` object and the indices for each split into 
+    the specified directory, as `hardataset.pt` and `split_indices.pt` respectively. This function will load these files
+    in if they already exist in the specified directory and to avoid recomputation (unless `load_if_exists` is `False`).
 
     Args:
         sequence_size (int, optional): Number of time steps in each sequence (sliding window size). Defaults to 100.
@@ -301,9 +216,8 @@ def prepare_datasets(
             Defaults to True.
 
     Returns:
-        Tuple[HARDatasetNormalized, HARDatasetNormalized, HARDatasetNormalized, Dict[str, torch.Tensor]]: Tuple 
-            containing the normalized train, validation, and test sets, along with a dictionary containing the
-            normalization statistics (the mean and standard deviation computed from the train set), all in that order. 
+        Tuple[Subset, Subset, Subset]: Tuple containing the normalized train, validation, and test sets (as
+        `Subset` objects of compiled `HARDataset`).
     """
 
     # Create save directory if it doesn't exist
@@ -311,14 +225,12 @@ def prepare_datasets(
 
     # Define paths for saved components
     dataset_path = os.path.join(save_dir, 'hardataset.pt')
-    norm_stats_path = os.path.join(save_dir, 'normalization_params.pt')
     split_indices_path = os.path.join(save_dir, 'split_indices.pt')
 
     # Load components if they exist and load_if_exists is True
-    if load_if_exists and all(os.path.exists(path) for path in [dataset_path, norm_stats_path, split_indices_path]):
-        print(f"✅ HARDataset object, normalization statistics, and split indices loaded from {save_dir}")
+    if load_if_exists and all(os.path.exists(path) for path in [dataset_path, split_indices_path]):
+        print(f"✅ HARDataset object and split indices loaded from {save_dir}")
         dataset = torch.load(dataset_path, weights_only=False)
-        norm_stats = torch.load(norm_stats_path, weights_only=False)
         split_indices = torch.load(split_indices_path, weights_only=False)
     else:
         print(f"🔄 Preparing dataset: Sequence Size: {sequence_size}, Stride: {stride}, Gap Threshold: {gap_threshold}")
@@ -347,28 +259,65 @@ def prepare_datasets(
         )
         split_indices = {'train_idx': train_idx, 'val_idx': val_idx, 'test_idx': test_idx}
         
-        # 4. Compute normalization statistics from the training set
-        normalizer = Normalizer()
-        norm_stats = normalizer.fit(Subset(dataset, train_idx))
-        
         # Save components for future use
         torch.save(dataset, dataset_path)
-        torch.save(norm_stats, norm_stats_path)
         torch.save(split_indices, split_indices_path)
-        print(f"✅ Components (HARDataset object, normalization statistics, and split indices) saved to {save_dir}")
+        print(f"✅ Components (HARDataset object and split indices) saved to {save_dir}")
 
     # Recreate subsets
     train_dataset = Subset(dataset, split_indices['train_idx'])
     val_dataset = Subset(dataset, split_indices['val_idx'])
     test_dataset = Subset(dataset, split_indices['test_idx'])
 
-    # Create a Normalizer object
-    normalizer = Normalizer(norm_stats['mean'], norm_stats['std'])
+    print(f"✅ Created train, validation, and test datasets.")
+    return train_dataset, val_dataset, test_dataset
 
-    # Apply normalization
-    train_dataset_norm = HARDatasetNormalized(train_dataset, normalizer)
-    val_dataset_norm = HARDatasetNormalized(val_dataset, normalizer)
-    test_dataset_norm = HARDatasetNormalized(test_dataset, normalizer)
+# Normalization Utils
+class Normalizer:
+    """Normalization utility for standardizing input features."""
+    def __init__(self):
+        """
+        Constructs a `Normalizer` instance.
+        """
+        self.mean = None
+        self.std = None
+        
+    def to(self, device: torch.device):
+        """Move normalization statistics to the specified device."""
+        self.mean = self.mean.to(device)
+        self.std = self.std.to(device)
+        
+    def __call__(self, x: torch.Tensor) -> torch.Tensor:
+        """Applies normalization to input tensor."""
+        # Move normalization statistics to same device as input
+        if (x.device != self.mean.device) or (x.device != self.std.device):
+            self.to(x.device)
+        
+        # x is of shape (x - self.mean) / self.std
+        x_norm = (x - self.mean) / (self.std + 1e-8)
+        return x_norm
+    
+    def fit(self, training_dataset: HARDataset | Subset) -> Dict[str, torch.Tensor]:
+        """
+        Compute the mean and standard deviation of the input training dataset for future normalization. Returns the two
+        values and also updates its corresponding attributes.
 
-    print(f"✅ Created train, validation, and test datasets (normalized to train set)")
-    return train_dataset_norm, val_dataset_norm, test_dataset_norm, norm_stats
+        Args:
+            training_dataset (HARDataset | Subset): Training dataset to fit to (compute normalization statistics from).
+
+        Returns:
+            Dict[str, torch.Tensor]: Dictionary containing computed mean and standard deviation values.
+        """
+        # Compute normalization statistics from given training dataset
+        all_features = [
+            training_dataset[i][0] # X of shape (sequence_size, num_features)
+            for i in range(len(training_dataset))
+        ]
+        
+        # Stack all sequences along the time dimension
+        all_features = torch.cat(all_features, dim=0)  # Shape: (total_time_steps, num_features)
+        
+        # Compute mean and std per feature
+        self.mean = torch.mean(all_features, dim=0)  # Shape: (num_features,)
+        self.std = torch.std(all_features, dim=0) # Shape: (num_features,)
+        return {'mean': self.mean, 'std': self.std}
