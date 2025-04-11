@@ -29,7 +29,8 @@ def train_HAR70_model(
     validation_dataloader: DataLoader,
     num_epochs: int = 15,
     base_dir: Optional[str] = "models",
-    save_interval: int = 5, 
+    save_interval: int = 5,
+    device: Optional[torch.device] = None, 
     verbose: bool = True
 ) -> Tuple[List[float], List[float], List[float], List[float], List[float], List[float], Normalizer]:
     """
@@ -47,6 +48,8 @@ def train_HAR70_model(
             None, then automatic saving of models is disabled. Defaults to "models".
         save_interval (int, optional): The interval (in epochs) after which the model will be saved, i.e., the model 
             will be saved every x epochs. Defaults to 5.
+        device (Optional[torch.device], optional): The device the model and batch data should be loaded on. 
+            Defaults to None, in which case the device will be set to CUDA if available, or CPU otherwise.
         verbose (bool, optional): Whether to print the model's validation metrics after each training epoch. 
             Defaults to True.
             
@@ -96,7 +99,7 @@ def train_HAR70_model(
             # Unpack the mini-batch data
             input_sequences_batch, target_labels_batch = batch
             input_sequences_batch = input_sequences_batch.to(device)
-            target_labels_batch = target_labels_batch.to(device)
+            target_labels_batch = target_labels_batch.to(device).long()
             
             # Normalize inputs
             input_sequences_batch = normalizer(input_sequences_batch)
@@ -112,7 +115,7 @@ def train_HAR70_model(
             
         # After each epoch
         # 1) Save the average loss per sample for the epoch to loss_history
-        training_loss = total_training_loss / len(train_dataloader.dataset) # Average loss per sample
+        training_loss = total_training_loss / len(train_dataloader)
         training_loss_history.append(training_loss)
         # 2) Evaluate model on validation set
         validation_loss, accuracy, f1, precision, recall, conf_matrix = evaluate_HAR70_model(model, validation_dataloader, normalizer, device)
@@ -143,7 +146,7 @@ def train_HAR70_model(
                 model_filename = f"{model_type}_epoch{epoch}.pth"
                 save_model(model, model_filename, save_dir, verbose=verbose)
             
-        if verbose: print("="*90) # Purely visual
+        if verbose: print("="*100) # Purely visual
 
     if verbose: print("(4) Training session finished.")
     return training_loss_history, validation_loss_history, accuracy_history, f1_history, precision_history, recall_history, normalizer
@@ -182,7 +185,7 @@ def evaluate_HAR70_model(
     confusion_matrix = torchmetrics.ConfusionMatrix(num_classes=7, task="multiclass").to(device)
     with torch.no_grad():  # No gradients needed for evaluation
         for input_sequences, target_labels in evaluation_dataloader:
-            input_sequences, target_labels = input_sequences.to(device), target_labels.to(device)
+            input_sequences, target_labels = input_sequences.to(device), target_labels.to(device).long()
             
             input_sequences = normalizer(input_sequences) # Normalize inputs
             logits = model(input_sequences)  # Forward pass
@@ -198,7 +201,7 @@ def evaluate_HAR70_model(
             confusion_matrix.update(predictions, target_labels)
 
     # Compute final metric values
-    final_evaluation_loss = total_loss / len(evaluation_dataloader.dataset) # Average loss per sample
+    final_evaluation_loss = total_loss / len(evaluation_dataloader)
     final_accuracy = accuracy.compute().item()
     final_f1 = f1_score.compute().item()
     final_precision = precision.compute().item()

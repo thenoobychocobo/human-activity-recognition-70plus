@@ -10,6 +10,7 @@ from abc import ABC, abstractmethod
 import torch
 import math
 import torch.nn as nn
+from torchtune.modules import RotaryPositionalEmbeddings # pip install torchao torchtune
 
 
 class HarBaseModel(nn.Module, ABC):
@@ -114,31 +115,38 @@ class HarTransformer(HarBaseModel):
     def __init__(
         self, 
         input_size: int = 6, 
-        hidden_size: int = 30, # d_model
+        hidden_size: int = 32, # d_model
+        dim_feedforward: Optional[int] = None, # d_ff
         num_layers: int = 2,  # Number of Transformer encoder layers
         num_heads: int = 2,   # Number of attention heads
         dropout_prob: float = 0.1, 
         num_classes: int = 7,
         max_sequence_length: int = 5000
     ):
-        super(HarTransformer, self).__init__(input_size, hidden_size, num_layers, dropout_prob, num_classes)
+        super().__init__(input_size, hidden_size, num_layers, dropout_prob, num_classes)
+        self.dim_feedforward = dim_feedforward or self.hidden_size * 4
         self.num_heads = num_heads
+        self.max_sequence_length = max_sequence_length
         
         # Embedding layer to project input features to hidden_size
         self.embedding = nn.Linear(self.input_size, self.hidden_size)
         # Note: nn.Embedding layer is usually used for embedding categorical variables
         
+        # Add learnable CLS token (inspired by BERT): shape (1, 1, hidden_size) will be expanded per batch
+        self.cls_token = nn.Parameter(torch.zeros(1, 1, hidden_size))
+        
         # Positional encoding to inject sequence order information
         self.positional_encoder = SinusoidalPositionalEncoding(
-            d_model=hidden_size, 
-            dropout=dropout_prob, 
-            max_len=max_sequence_length
+            d_model=self.hidden_size, 
+            dropout=self.dropout_prob, 
+            max_len=self.max_sequence_length
         )
         
         # Single encoder
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=self.hidden_size,
             nhead=self.num_heads,
+            dim_feedforward=self.dim_feedforward,
             dropout=self.dropout_prob,
             batch_first=True
         )
@@ -164,18 +172,22 @@ class HarTransformer(HarBaseModel):
         # 1) Embed the input features
         embedded = self.embedding(input_seq) # (batch_size, seq_len, hidden_size)
         
-        # 2) Add positional encoding
-        embedded = self.positional_encoder(embedded)
-        # embedded += self.positional_encoding[:, :seq_len, :]
+        # 2) Prepend CLS token to each input sequence: trained to capture sequence-level information
+        batch_size = input_seq.size(0)
+        cls_tokens = self.cls_token.expand(batch_size, 1, -1) # (batch_size, 1, hidden_size)
+        embedded = torch.cat([cls_tokens, embedded], dim=1) # (batch_size, seq_len+1, hidden_size)
         
-        # 3) Pass through Transformer encoders (we get refined, contextualized time step embeddings)
+        # 3) Add positional encoding
+        embedded = self.positional_encoder(embedded)
+        
+        # 4) Pass through Transformer encoders (we get refined, contextualized time step embeddings)
         transformer_output = self.transformer_encoder(embedded) # (batch_size, seq_len, hidden_size)
         
-        # 4) Use the output of the final time step for classification
-        final_timestep_hidden_state = transformer_output[:, -1, :]  # (batch_size, hidden_size)
+        # 5) Use the CLS token as input to classification network
+        cls_output = transformer_output[:, 0, :]  # (batch_size, hidden_size)
         
         # 5) Pass through fully connected layer
-        logits = self.fc(final_timestep_hidden_state)  # (batch_size, num_classes)
+        logits = self.fc(cls_output)  # (batch_size, num_classes)
         
         return logits
 
@@ -210,3 +222,172 @@ class SinusoidalPositionalEncoding(nn.Module):
         # Transpose pe to [seq_len, 1, d_model] then add to x
         x = x + self.pe[:x.size(1)].transpose(0, 1)  # [1, seq_len, d_model]
         return self.dropout(x)
+    
+
+class HarTransformerExperimental(HarBaseModel):
+    """
+    Transformer-based model for Human Activity Recognition on HAR70+ dataset with 2 experimental features:
+    Rotary Positional Encoding (RoPE) and a 1D CNN as a tokenizer. 
+    """
+    def __init__(
+        self, 
+        input_size: int = 6, 
+        hidden_size: int = 32, # d_model
+        dim_feedforward: Optional[int] = None, # d_ff
+        num_layers: int = 2, # Number of Transformer encoder layers
+        num_heads: int = 2, # Number of attention heads
+        dropout_prob: float = 0.1, 
+        num_classes: int = 7,
+        cnn_kernel_size: int = 3,
+        cnn_stride: int = 1,
+        cnn_padding: int = 1,
+        max_sequence_length: int = 5000
+    ):
+        super().__init__(input_size, hidden_size, num_layers, dropout_prob, num_classes)
+        self.dim_feedforward = dim_feedforward or self.hidden_size * 4
+        self.num_heads = num_heads
+        self.cnn_kernel_size = cnn_kernel_size
+        self.cnn_stride = cnn_stride
+        self.cnn_padding = cnn_padding
+        self.max_sequence_length = max_sequence_length
+        
+        # Embedding layer to project input features to hidden_size
+        self.embedding = nn.Linear(self.input_size, self.hidden_size)
+        # Note: nn.Embedding layer is usually used for embedding categorical variables
+        
+        # 1D CNN as tokenizer
+        self.cnn_tokenizer = nn.Sequential(
+            nn.Conv1d(
+                in_channels=self.hidden_size, 
+                out_channels=self.hidden_size,
+                kernel_size=self.cnn_kernel_size,
+                stride=self.cnn_stride,
+                padding=self.cnn_padding
+            ),
+            nn.ReLU(),
+            nn.BatchNorm1d(self.hidden_size),
+            nn.Dropout(self.dropout_prob)
+        )
+        
+        # Stack of N encoders
+        # Rotary positional encoding is implemented within the attention layers
+        encoder_layers = nn.ModuleList([
+            self.RoPETransformerEncoderLayer(
+                embed_dim=self.hidden_size,
+                num_heads=self.num_heads,
+                dim_feedforward=self.dim_feedforward,
+                dropout=self.dropout_prob,
+                max_sequence_length=self.max_sequence_length
+            )
+            for _ in range(self.num_layers)
+        ])
+        self.transformer_encoder = nn.Sequential(*encoder_layers)
+        
+        # Fully connected layer for classification
+        # We use the embedding vector (hidden state) of the final time step to predict the class
+        self.fc = nn.Linear(hidden_size, num_classes)
+
+    def forward(self, input_seq: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass of the Transformer-based HAR model.
+
+        Args:
+            input_seq (torch.Tensor): Input tensor of shape (batch_size, seq_len, input_size).
+
+        Returns:
+            torch.Tensor: Logits of shape (batch_size, num_classes).
+        """
+        
+        # 1) Embed the input features
+        embedded = self.embedding(input_seq) # (batch_size, seq_len, hidden_size)
+        
+        # 2) Tokenize using CNN
+        cnn_input = embedded.permute(0, 2, 1) # (batch_size, hidden_size, seq_len)
+        cnn_output = self.cnn_tokenizer(cnn_input) # (batch_size, hidden_size, seq_len)
+        embedded = cnn_output.permute(0, 2, 1) # (batch_size, seq_len, hidden_size)
+        
+        # 3) Pass through Transformer encoders (we get refined, contextualized time step embeddings)
+        for encoder_layer in self.transformer_encoder:
+            embedded = encoder_layer(embedded)
+        
+        # 4) Use the output of the final time step for classification
+        final_timestep_hidden_state = embedded[:, -1, :]  # (batch_size, hidden_size)
+        
+        # 5) Pass through fully connected layer
+        logits = self.fc(final_timestep_hidden_state)  # (batch_size, num_classes)
+        
+        return logits
+    
+    class RoPETransformerEncoderLayer(nn.Module):
+        def __init__(self, embed_dim, num_heads, dim_feedforward, dropout, max_sequence_length):
+            super().__init__()
+            self.self_attn = self.RoPEMultiheadAttention(embed_dim, num_heads, max_sequence_length, dropout)
+
+            self.linear1 = nn.Linear(embed_dim, dim_feedforward)
+            self.dropout = nn.Dropout(dropout)
+            self.linear2 = nn.Linear(dim_feedforward, embed_dim)
+
+            self.norm1 = nn.LayerNorm(embed_dim)
+            self.norm2 = nn.LayerNorm(embed_dim)
+
+            self.dropout1 = nn.Dropout(dropout)
+            self.dropout2 = nn.Dropout(dropout)
+            self.activation = nn.ReLU()
+
+        def forward(self, src):
+            # Self-attention block
+            attn_output = self.self_attn(src)
+            src = src + self.dropout1(attn_output)
+            src = self.norm1(src)
+
+            # Feedforward block
+            ff_output = self.linear2(self.dropout(self.activation(self.linear1(src))))
+            src = src + self.dropout2(ff_output)
+            src = self.norm2(src)
+
+            return src
+
+        class RoPEMultiheadAttention(nn.Module):
+            def __init__(self, embed_dim, num_heads, max_sequence_length, dropout=0.0):
+                super().__init__()
+                self.embed_dim = embed_dim
+                self.num_heads = num_heads
+                self.head_dim = embed_dim // num_heads
+                self.max_sequence_length = max_sequence_length
+
+                assert self.head_dim * num_heads == embed_dim, "embed_dim (i.e. hidden_size) must be divisible by num_heads"
+                assert self.head_dim % 2 == 0, "For RoPE, (head_dim = embed_dim / num_heads) must be even"
+
+                self.qkv_proj = nn.Linear(embed_dim, 3 * embed_dim)
+                self.out_proj = nn.Linear(embed_dim, embed_dim)
+                self.dropout = nn.Dropout(dropout)
+
+                # RoPE initialized per head dimension
+                self.rotary_emb = RotaryPositionalEmbeddings(dim=self.head_dim, max_seq_len=self.max_sequence_length)
+
+            def forward(self, x):
+                B, T, C = x.size()  # (batch, seq_len, embed_dim)
+
+                qkv = self.qkv_proj(x)  # (B, T, 3 * C)
+                qkv = qkv.view(B, T, 3, self.num_heads, self.head_dim)  # (B, T, 3, H, D)
+                qkv = qkv.permute(2, 0, 1, 3, 4)  # (3, B, T, H, D)
+                q, k, v = qkv[0], qkv[1], qkv[2]  # Each: (B, T, H, D)
+
+                # Apply Rotary Positional Embeddings
+                q = self.rotary_emb(q)  # (B, T, H, D)
+                k = self.rotary_emb(k)  # (B, T, H, D)
+
+                # Transpose to standard attention shape
+                q = q.permute(0, 2, 1, 3)  # (B, H, T, D)
+                k = k.permute(0, 2, 1, 3)
+                v = v.permute(0, 2, 1, 3)
+
+                # Scaled dot-product attention
+                attn_scores = torch.matmul(q, k.transpose(-2, -1)) / (self.head_dim ** 0.5)  # (B, H, T, T)
+                attn_weights = torch.softmax(attn_scores, dim=-1)
+                attn_weights = self.dropout(attn_weights)
+
+                context = torch.matmul(attn_weights, v)  # (B, H, T, D)
+                context = context.transpose(1, 2).contiguous().view(B, T, C)  # (B, T, embed_dim)
+
+                return self.out_proj(context)
