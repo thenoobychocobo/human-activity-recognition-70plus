@@ -22,8 +22,7 @@ class HarBaseModel(nn.Module, ABC):
         hidden_size: int = 30,
         num_layers: int = 1,
         dropout_prob: float = 0.0,
-        num_classes: int = 7,
-        device: Optional[torch.device] = None
+        num_classes: int = 7
     ):
         """
         Initializes the base HAR model.
@@ -34,17 +33,13 @@ class HarBaseModel(nn.Module, ABC):
             num_layers (int): Number of recurrent layers.
             dropout_prob (float): Dropout probability (ignored if num_layers == 1).
             num_classes (int): Number of output classes.
-            device (Optional[torch.device]): Device to run the model on (CPU or GPU).
         """
-        super(HarBaseModel, self).__init__()
+        super().__init__()
         self.input_size = input_size
         self.hidden_size = hidden_size
         self.num_layers = num_layers
         self.dropout_prob = dropout_prob if num_layers > 1 else 0.0
         self.num_classes = num_classes
-        
-        # Set up device
-        self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
     @abstractmethod
     def forward(self, input_seq: torch.Tensor) -> torch.Tensor:
@@ -68,10 +63,9 @@ class HarLSTM(HarBaseModel):
         hidden_size: int = 30,
         num_layers: int = 1, 
         dropout_prob: float = 0.0, 
-        num_classes = 7,
-        device: Optional[torch.device] = None
+        num_classes = 7
     ):
-        super(HarLSTM, self).__init__(input_size, hidden_size, num_layers, dropout_prob, num_classes, device)
+        super().__init__(input_size, hidden_size, num_layers, dropout_prob, num_classes)
         self.rnn = nn.LSTM(
             self.input_size, self.hidden_size,
             num_layers=self.num_layers, 
@@ -79,10 +73,6 @@ class HarLSTM(HarBaseModel):
             batch_first=True
         )
         self.fc = nn.Linear(self.hidden_size, self.num_classes)
-        
-        # Move model to device
-        self.to(self.device)
-        print(f"{type(self).__name__} model loaded on {self.device}.")
 
     def forward(self, input_seq: torch.Tensor) -> torch.Tensor:
         # Map hidden state of final time step to prediction
@@ -100,10 +90,9 @@ class HarGRU(HarBaseModel):
         hidden_size: int = 30,
         num_layers: int = 1, 
         dropout_prob: float = 0.0, 
-        num_classes = 7,
-        device: Optional[torch.device] = None
+        num_classes = 7
     ):
-        super(HarGRU, self).__init__(input_size, hidden_size, num_layers, dropout_prob, num_classes, device)
+        super().__init__(input_size, hidden_size, num_layers, dropout_prob, num_classes)
         self.rnn = nn.GRU(
             self.input_size, self.hidden_size,
             num_layers=self.num_layers,
@@ -111,10 +100,6 @@ class HarGRU(HarBaseModel):
             batch_first=True
         )
         self.fc = nn.Linear(self.hidden_size, self.num_classes)
-        
-        # Move model to device
-        self.to(self.device)
-        print(f"{type(self).__name__} model loaded on {self.device}.")
 
     def forward(self, input_seq):
         # Map hidden state of final time step to prediction
@@ -134,10 +119,9 @@ class HarTransformer(HarBaseModel):
         num_heads: int = 2,   # Number of attention heads
         dropout_prob: float = 0.1, 
         num_classes: int = 7,
-        max_sequence_length: int = 5000,
-        device: Optional[torch.device] = None
+        max_sequence_length: int = 5000
     ):
-        super(HarTransformer, self).__init__(input_size, hidden_size, num_layers, dropout_prob, num_classes, device)
+        super(HarTransformer, self).__init__(input_size, hidden_size, num_layers, dropout_prob, num_classes)
         self.num_heads = num_heads
         
         # Embedding layer to project input features to hidden_size
@@ -145,7 +129,7 @@ class HarTransformer(HarBaseModel):
         # Note: nn.Embedding layer is usually used for embedding categorical variables
         
         # Positional encoding to inject sequence order information
-        self.positional_encoder = PositionalEncoding(
+        self.positional_encoder = SinusoidalPositionalEncoding(
             d_model=hidden_size, 
             dropout=dropout_prob, 
             max_len=max_sequence_length
@@ -165,10 +149,6 @@ class HarTransformer(HarBaseModel):
         # Fully connected layer for classification
         # We use the embedding vector (hidden state) of the final time step to predict the class
         self.fc = nn.Linear(hidden_size, num_classes)
-        
-        # Move model to device
-        self.to(self.device)
-        print(f"{type(self).__name__} model loaded on {self.device}.")
 
     def forward(self, input_seq: torch.Tensor) -> torch.Tensor:
         """
@@ -198,15 +178,17 @@ class HarTransformer(HarBaseModel):
         logits = self.fc(final_timestep_hidden_state)  # (batch_size, num_classes)
         
         return logits
-    
-class PositionalEncoding(nn.Module):
+
+
+class SinusoidalPositionalEncoding(nn.Module):
     """
     Adds positional encodings to input sequences to inject information about token positions. 
     This class uses sinusoidal functions (sine and cosine) to generate encodings, following the original Transformer 
     architecture. The encodings are added to the input embeddings, and dropout is applied for regularization.
     
     Code taken from an 
-    [official PyTorch tutorial](https://pytorch-tutorials-preview.netlify.app/beginner/transformer_tutorial.html).
+    [official PyTorch tutorial](https://pytorch-tutorials-preview.netlify.app/beginner/transformer_tutorial.html)
+    and adapted such that batch dimension comes first (batch_first = True).
     """
 
     def __init__(self, d_model: int, dropout: float = 0.1, max_len: int = 5000):
@@ -222,8 +204,9 @@ class PositionalEncoding(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
-        Arguments:
-            x: Tensor, shape ``[seq_len, batch_size, embedding_dim]``
+        Args:
+            x: Tensor, shape [batch_size, seq_len, embedding_dim]
         """
-        x = x + self.pe[:x.size(0)]
+        # Transpose pe to [seq_len, 1, d_model] then add to x
+        x = x + self.pe[:x.size(1)].transpose(0, 1)  # [1, seq_len, d_model]
         return self.dropout(x)
