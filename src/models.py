@@ -179,6 +179,7 @@ class HarTransformer(HarBaseModel):
         
         return logits
 
+
 class SinusoidalPositionalEncoding(nn.Module):
     """
     Adds positional encodings to input sequences to inject information about token positions. 
@@ -226,11 +227,10 @@ class HarCnnTransformer(HarBaseModel):
         dropout_prob: float = 0.1, 
         num_classes: int = 7,
         max_sequence_length: int = 5000,
-        device: Optional[torch.device] = None
     ):
         super(HarCnnTransformer, self).__init__(input_size, transformer_hidden_size, 
                                                transformer_num_layers, dropout_prob, 
-                                               num_classes, device)
+                                               num_classes)
         self.transformer_num_heads = transformer_num_heads
         self.cnn_hidden_channels = cnn_hidden_channels
         self.cnn_kernel_size = cnn_kernel_size
@@ -279,10 +279,6 @@ class HarCnnTransformer(HarBaseModel):
         
         # Fully connected layer for classification
         self.fc = nn.Linear(self.hidden_size, self.num_classes)
-        
-        # Move model to device
-        self.to(self.device)
-        print(f"{type(self).__name__} model loaded on {self.device}.")
         
     def forward(self, input_seq: torch.Tensor) -> torch.Tensor:
         """
