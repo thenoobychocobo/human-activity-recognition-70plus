@@ -56,6 +56,12 @@ def train_HAR70_model(
             and recall, along with a `Normalizer` already fitted on the training data. 
     """
     if verbose: print("Beginning training session...")
+    
+    # Device set-up
+    device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model.to(device)
+    if verbose: print(f"Model moved to {device}")
+    
     criterion = nn.CrossEntropyLoss()
     training_loss_history, validation_loss_history, accuracy_history, f1_history, precision_history, recall_history = [], [], [], [], [], []
     
@@ -89,8 +95,8 @@ def train_HAR70_model(
             
             # Unpack the mini-batch data
             input_sequences_batch, target_labels_batch = batch
-            input_sequences_batch = input_sequences_batch.to(model.device)
-            target_labels_batch = target_labels_batch.to(model.device)
+            input_sequences_batch = input_sequences_batch.to(device)
+            target_labels_batch = target_labels_batch.to(device)
             
             # Normalize inputs
             input_sequences_batch = normalizer(input_sequences_batch)
@@ -109,7 +115,7 @@ def train_HAR70_model(
         training_loss = total_training_loss / len(train_dataloader.dataset) # Average loss per sample
         training_loss_history.append(training_loss)
         # 2) Evaluate model on validation set
-        validation_loss, accuracy, f1, precision, recall, conf_matrix = evaluate_HAR70_model(model, validation_dataloader, normalizer)
+        validation_loss, accuracy, f1, precision, recall, conf_matrix = evaluate_HAR70_model(model, validation_dataloader, normalizer, device)
         validation_loss_history.append(validation_loss)
         accuracy_history.append(accuracy)
         f1_history.append(f1)
@@ -145,7 +151,8 @@ def train_HAR70_model(
 def evaluate_HAR70_model(
     model: HarBaseModel, 
     evaluation_dataloader: DataLoader,
-    normalizer: Normalizer
+    normalizer: Normalizer,
+    device: Optional[torch.device] = None
 ) -> Tuple[float, float, float, float, float, np.ndarray]:
     """
     Evaluates the model's performance on the given evaluation dataset. 
@@ -155,23 +162,27 @@ def evaluate_HAR70_model(
         evaluation_dataloader (DataLoader): The dataloader for the evaluation dataset.
         normalizer (Normalizer): Normalizer object that has already been fitted to training data (i.e. normalization
             statistics already computed).
+        device: The device to load batch data onto, which should be the same device that the model is on. Defaults to
+            None, in which case the device that the model is on will be inferred by checking the model's first parameter.
 
     Returns:
         Tuple[float, float, float, float, float, np.ndarray]: Tuple containing the model's average evaluation loss 
             (per sample sequence), accuracy, f1, precision, recall, and the confusion matrix. 
     """
+    device = device or next(model.parameters()) # Infer the device the model is on by checking the first parameter
+    
     model.eval() # Set model to evaluation mode
     criterion = nn.CrossEntropyLoss()
     total_loss = 0
     
-    accuracy = torchmetrics.classification.MulticlassAccuracy(num_classes=7).to(model.device)
-    f1_score = torchmetrics.classification.MulticlassF1Score(num_classes=7, average="macro").to(model.device)
-    precision = torchmetrics.classification.MulticlassPrecision(num_classes=7, average="macro").to(model.device)
-    recall = torchmetrics.classification.MulticlassRecall(num_classes=7, average="macro").to(model.device)
-    confusion_matrix = torchmetrics.ConfusionMatrix(num_classes=7, task="multiclass").to(model.device)
+    accuracy = torchmetrics.classification.MulticlassAccuracy(num_classes=7).to(device)
+    f1_score = torchmetrics.classification.MulticlassF1Score(num_classes=7, average="macro").to(device)
+    precision = torchmetrics.classification.MulticlassPrecision(num_classes=7, average="macro").to(device)
+    recall = torchmetrics.classification.MulticlassRecall(num_classes=7, average="macro").to(device)
+    confusion_matrix = torchmetrics.ConfusionMatrix(num_classes=7, task="multiclass").to(device)
     with torch.no_grad():  # No gradients needed for evaluation
         for input_sequences, target_labels in evaluation_dataloader:
-            input_sequences, target_labels = input_sequences.to(model.device), target_labels.to(model.device)
+            input_sequences, target_labels = input_sequences.to(device), target_labels.to(device)
             
             input_sequences = normalizer(input_sequences) # Normalize inputs
             logits = model(input_sequences)  # Forward pass
@@ -225,7 +236,8 @@ def save_training_plots_and_metric_history(
     recall_history: List[float], 
     model_name: str,
     figsize: Tuple[float, float] = (7.0, 4.0),
-    base_dir: str = "results"
+    base_dir: str = "results",
+    device: Optional[torch.device] = None
 ) -> None:
     """
     Saves plots for the training process metrics (`.png` images) and the input metric histories in a subdirectory
@@ -241,6 +253,8 @@ def save_training_plots_and_metric_history(
         model_name (str): Name of model (only for the subdirectory name).
         figsize (Tuple[float, float]): Width, height of plots in inches. Defaults to (7.0, 4.0). 
         base_dir (str, optional): Directory to save plots and histories of metrics in. Defaults to "results".
+        device (Optional[torch.device], optional): The device the model and batch data should be loaded on. 
+            Defaults to None, in which case the device will be set to CUDA if available, or CPU otherwise.
     """
     # Create subdirectory to save metric histories and the plots to. 
     os.makedirs(base_dir, exist_ok=True) # Creates base directory
