@@ -223,6 +223,117 @@ class SinusoidalPositionalEncoding(nn.Module):
         x = x + self.pe[:x.size(1)].transpose(0, 1)  # [1, seq_len, d_model]
         return self.dropout(x)
     
+class HarCnnTransformer(HarBaseModel):
+    """Hybrid CNN-Transformer model for Human Activity Recognition on HAR70+ dataset.
+    Uses 1D CNN as a feature extractor before passing data to a Transformer for sequence modeling.
+    """
+    def __init__(
+        self, 
+        input_size: int = 6, 
+        cnn_hidden_channels: int = 64,
+        cnn_kernel_size: int = 15,
+        cnn_layers: int = 2,
+        transformer_hidden_size: int = 30,  # d_model
+        transformer_num_layers: int = 2,    # Number of Transformer encoder layers
+        transformer_num_heads: int = 2,     # Number of attention heads
+        dropout_prob: float = 0.1, 
+        num_classes: int = 7,
+        max_sequence_length: int = 5000,
+    ):
+        super(HarCnnTransformer, self).__init__(input_size, transformer_hidden_size, 
+                                               transformer_num_layers, dropout_prob, 
+                                               num_classes)
+        self.transformer_num_heads = transformer_num_heads
+        self.cnn_hidden_channels = cnn_hidden_channels
+        self.cnn_kernel_size = cnn_kernel_size
+        self.cnn_layers = cnn_layers
+        
+        # 1D CNN Feature Extractor/Tokenizer
+        self.cnn_layers_list = nn.ModuleList()
+        
+        # First CNN layer (input channels -> hidden channels)
+        self.cnn_layers_list.append(nn.Sequential(
+            nn.Conv1d(self.input_size, self.cnn_hidden_channels, kernel_size=self.cnn_kernel_size, padding='same'),
+            nn.BatchNorm1d(self.cnn_hidden_channels),
+            nn.ReLU(),
+            nn.MaxPool1d(kernel_size=2, stride=2)  # Downsample sequence length by factor of 2
+        ))
+        
+        # Additional CNN layers (hidden channels -> hidden channels)
+        for _ in range(1, self.cnn_layers):
+            self.cnn_layers_list.append(nn.Sequential(
+                nn.Conv1d(self.cnn_hidden_channels, self.cnn_hidden_channels, kernel_size=self.cnn_kernel_size, padding='same'),
+                nn.BatchNorm1d(self.cnn_hidden_channels),
+                nn.ReLU(),
+                nn.MaxPool1d(kernel_size=2, stride=2)  # Further downsample sequence length
+            ))
+        
+        # Linear projection from CNN output to transformer hidden size
+        self.cnn_to_transformer = nn.Linear(self.cnn_hidden_channels, self.hidden_size)
+        
+        # Positional encoding to inject sequence order information
+        self.positional_encoder = SinusoidalPositionalEncoding(
+            d_model=self.hidden_size, 
+            dropout=self.dropout_prob, 
+            max_len=max_sequence_length
+        )
+        
+        # Transformer encoder layer
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=self.hidden_size,
+            nhead=self.transformer_num_heads,
+            dropout=self.dropout_prob,
+            batch_first=True
+        )
+        
+        # Stack of N transformer encoders
+        self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=self.num_layers)
+        
+        # Fully connected layer for classification
+        self.fc = nn.Linear(self.hidden_size, self.num_classes)
+        
+    def forward(self, input_seq: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass of the CNN-Transformer hybrid HAR model.
+
+        Args:
+            input_seq (torch.Tensor): Input tensor of shape (batch_size, seq_len, input_size).
+
+        Returns:
+            torch.Tensor: Logits of shape (batch_size, num_classes).
+        """
+        batch_size, seq_len, _ = input_seq.shape
+        
+        # 1) Transpose for CNN: from (batch, seq_len, features) to (batch, features, seq_len)
+        x = input_seq.transpose(1, 2)  # Now shape: (batch_size, input_size, seq_len)
+        
+        # 2) Apply CNN layers for feature extraction
+        for cnn_layer in self.cnn_layers_list:
+            x = cnn_layer(x)
+            
+        # Get the new sequence length after CNN pooling operations
+        _, _, new_seq_len = x.shape
+        
+        # 3) Transpose back to (batch, seq_len, channels) for the transformer
+        x = x.transpose(1, 2)  # Now shape: (batch_size, new_seq_len, cnn_hidden_channels)
+        
+        # 4) Project CNN features to transformer dimension
+        x = self.cnn_to_transformer(x)  # Now shape: (batch_size, new_seq_len, hidden_size)
+        
+        # 5) Add positional encoding
+        x = self.positional_encoder(x)
+        
+        # 6) Pass through Transformer encoders
+        transformer_output = self.transformer_encoder(x)  # (batch_size, new_seq_len, hidden_size)
+        
+        # 7) Use the output of the final time step for classification
+        final_timestep_hidden_state = transformer_output[:, -1, :]  # (batch_size, hidden_size)
+        
+        # 8) Pass through fully connected layer
+        logits = self.fc(final_timestep_hidden_state)  # (batch_size, num_classes)
+        
+        return logits
+    
 
 class HarTransformerExperimental(HarBaseModel):
     """
