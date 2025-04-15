@@ -3,6 +3,8 @@ This repository provides code for applying deep learning techniques to recognize
 
 We base our work on the [Human Activity Recognition 70+ (HAR70+) dataset](https://archive.ics.uci.edu/dataset/780/har70)[^1]. This dataset contains sensor data from 18 fit-to-frail older adult subjects (70-95 years old) wearing two 3-axial accelerometers (attached to the right thigh and lower back) for around 40 minutes during a semi-structured free-living protocol. We selected the HAR70+ dataset for its rich and professionally annotated sensor data. Notably, datasets centered on older adults remain underrepresented in human activity recognition research, despite their growing importance. As populations in Singapore and across Asia continue to age rapidly, there is a pressing need for robust, data-driven methods to support health monitoring and encourage independent living among older adults.
 
+[^1]: Ustad, A., Logacjov, A., Trollebø, S.Ø., Thingstad, P., Vereijken, B., Bach, K., Maroni, N.S., 2023. Validation of an Activity Type Recognition Model Classifying Daily Physical Behavior in Older Adults: The HAR70+ Model. Sensors 23, 2368. https://doi.org/10.3390/s23052368
+
 ## Table of Contents
 - [Project Overview](#project-overview)
 - [Usage](#usage)
@@ -54,4 +56,4 @@ This code was developed using Python 3.12.8.
 3. Open and run the notebooks in the `notebooks/` folder.
 
 ## Acknowledgements
-[^1] Ustad, A., Logacjov, A., Trollebø, S.Ø., Thingstad, P., Vereijken, B., Bach, K., Maroni, N.S., 2023. Validation of an Activity Type Recognition Model Classifying Daily Physical Behavior in Older Adults: The HAR70+ Model. Sensors 23, 2368. https://doi.org/10.3390/s23052368
+WIP
