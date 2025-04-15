@@ -13,6 +13,10 @@ import torch.nn as nn
 from torchtune.modules import RotaryPositionalEmbeddings # pip install torchao torchtune
 
 
+##############
+# Base Class #
+##############
+
 class HarBaseModel(nn.Module, ABC):
     """
     Abstract base class for Human Activity Recognition (HAR) models, designed for HAR70+ dataset.
@@ -29,11 +33,11 @@ class HarBaseModel(nn.Module, ABC):
         Initializes the base HAR model.
 
         Args:
-            input_size (int): Number of input features per time step.
-            hidden_size (int): Dimensionality of the hidden state vector.
-            num_layers (int): Number of recurrent layers.
-            dropout_prob (float): Dropout probability (ignored if num_layers == 1).
-            num_classes (int): Number of output classes.
+            input_size (int, optional): Number of input features per time step. Defaults to 6.
+            hidden_size (int, optional): Dimensionality of the hidden state vector. Defaults to 30.
+            num_layers (int, optional): Number of recurrent layers. Defaults to 1.
+            dropout_prob (float, optional): Dropout probability (ignored if num_layers == 1). Defaults to 0.0.
+            num_classes (int, optional): Number of output classes. Defaults to 7.
         """
         super().__init__()
         self.input_size = input_size
@@ -56,6 +60,10 @@ class HarBaseModel(nn.Module, ABC):
         pass    
 
 
+##############
+# RNN Models #
+##############
+
 class HarLSTM(HarBaseModel):
     """LSTM-based model for Human Activity Recognition on HAR70+ dataset."""
     def __init__(
@@ -66,6 +74,16 @@ class HarLSTM(HarBaseModel):
         dropout_prob: float = 0.0, 
         num_classes = 7
     ):
+        """
+        Initializes the LSTM HAR model.
+
+        Args:
+            input_size (int, optional): Number of input features per time step. Defaults to 6.
+            hidden_size (int, optional): Dimensionality of the hidden state vector. Defaults to 30.
+            num_layers (int, optional): Number of recurrent layers. Defaults to 1.
+            dropout_prob (float, optional): Dropout probability (ignored if num_layers == 1). Defaults to 0.0.
+            num_classes (int, optional): Number of output classes. Defaults to 7.
+        """
         super().__init__(input_size, hidden_size, num_layers, dropout_prob, num_classes)
         self.rnn = nn.LSTM(
             self.input_size, self.hidden_size,
@@ -93,6 +111,16 @@ class HarGRU(HarBaseModel):
         dropout_prob: float = 0.0, 
         num_classes = 7
     ):
+        """
+        Initializes the GRU HAR model.
+
+        Args:
+            input_size (int, optional): Number of input features per time step. Defaults to 6.
+            hidden_size (int, optional): Dimensionality of the hidden state vector. Defaults to 30.
+            num_layers (int, optional): Number of recurrent layers. Defaults to 1.
+            dropout_prob (float, optional): Dropout probability (ignored if num_layers == 1). Defaults to 0.0.
+            num_classes (int, optional): Number of output classes. Defaults to 7.
+        """
         super().__init__(input_size, hidden_size, num_layers, dropout_prob, num_classes)
         self.rnn = nn.GRU(
             self.input_size, self.hidden_size,
@@ -109,20 +137,40 @@ class HarGRU(HarBaseModel):
         logits = self.fc(hn[-1]) # hn[-1] is the hidden state of the final layer for the final time step
         return logits
    
-    
+
+######################
+# Transformer Models #
+######################
+
 class HarTransformer(HarBaseModel):
     """Transformer-based model for Human Activity Recognition on HAR70+ dataset."""
     def __init__(
         self, 
         input_size: int = 6, 
-        hidden_size: int = 32, # d_model
-        dim_feedforward: Optional[int] = None, # d_ff
-        num_layers: int = 2,  # Number of Transformer encoder layers
-        num_heads: int = 2,   # Number of attention heads
+        hidden_size: int = 32, 
+        dim_feedforward: Optional[int] = None, 
+        num_layers: int = 2, 
+        num_heads: int = 2, 
         dropout_prob: float = 0.1, 
         num_classes: int = 7,
         max_sequence_length: int = 5000
     ):
+        """
+        Initializes the Transformer HAR model.
+
+        Args:
+            input_size (int, optional): Number of input features per time step. Defaults to 6.
+            hidden_size (int, optional): Dimensionality of the hidden state vector i.e. embedding size (d_model). 
+                Defaults to 32.
+            dim_feedforward (Optional[int], optional): Number of units in hidden layers of feed-forward network (d_ff). 
+                Defaults to None, in which case it will initialize to hidden_size * 4.
+            num_layers (int, optional): Number of Transformer encoder layers. Defaults to 2.
+            num_heads (int, optional): Number of attention heads. Defaults to 2.
+            dropout_prob (float, optional): Dropout probability. Defaults to 0.1.
+            num_classes (int, optional): Number of output classes. Defaults to 7.
+            max_sequence_length (int, optional): Specifies the maximum sequence length for positional encoding. 
+                Defaults to 5000.
+        """
         super().__init__(input_size, hidden_size, num_layers, dropout_prob, num_classes)
         self.dim_feedforward = dim_feedforward or self.hidden_size * 4
         self.num_heads = num_heads
@@ -159,16 +207,6 @@ class HarTransformer(HarBaseModel):
         self.fc = nn.Linear(hidden_size, num_classes)
 
     def forward(self, input_seq: torch.Tensor) -> torch.Tensor:
-        """
-        Forward pass of the Transformer-based HAR model.
-
-        Args:
-            input_seq (torch.Tensor): Input tensor of shape (batch_size, seq_len, input_size).
-
-        Returns:
-            torch.Tensor: Logits of shape (batch_size, num_classes).
-        """
-        
         # 1) Embed the input features
         embedded = self.embedding(input_seq) # (batch_size, seq_len, hidden_size)
         
@@ -222,118 +260,7 @@ class SinusoidalPositionalEncoding(nn.Module):
         # Transpose pe to [seq_len, 1, d_model] then add to x
         x = x + self.pe[:x.size(1)].transpose(0, 1)  # [1, seq_len, d_model]
         return self.dropout(x)
-    
-class HarCnnTransformer(HarBaseModel):
-    """Hybrid CNN-Transformer model for Human Activity Recognition on HAR70+ dataset.
-    Uses 1D CNN as a feature extractor before passing data to a Transformer for sequence modeling.
-    """
-    def __init__(
-        self, 
-        input_size: int = 6, 
-        cnn_hidden_channels: int = 64,
-        cnn_kernel_size: int = 15,
-        cnn_layers: int = 2,
-        transformer_hidden_size: int = 30,  # d_model
-        transformer_num_layers: int = 2,    # Number of Transformer encoder layers
-        transformer_num_heads: int = 2,     # Number of attention heads
-        dropout_prob: float = 0.1, 
-        num_classes: int = 7,
-        max_sequence_length: int = 5000,
-    ):
-        super(HarCnnTransformer, self).__init__(input_size, transformer_hidden_size, 
-                                               transformer_num_layers, dropout_prob, 
-                                               num_classes)
-        self.transformer_num_heads = transformer_num_heads
-        self.cnn_hidden_channels = cnn_hidden_channels
-        self.cnn_kernel_size = cnn_kernel_size
-        self.cnn_layers = cnn_layers
-        
-        # 1D CNN Feature Extractor/Tokenizer
-        self.cnn_layers_list = nn.ModuleList()
-        
-        # First CNN layer (input channels -> hidden channels)
-        self.cnn_layers_list.append(nn.Sequential(
-            nn.Conv1d(self.input_size, self.cnn_hidden_channels, kernel_size=self.cnn_kernel_size, padding='same'),
-            nn.BatchNorm1d(self.cnn_hidden_channels),
-            nn.ReLU(),
-            nn.MaxPool1d(kernel_size=2, stride=2)  # Downsample sequence length by factor of 2
-        ))
-        
-        # Additional CNN layers (hidden channels -> hidden channels)
-        for _ in range(1, self.cnn_layers):
-            self.cnn_layers_list.append(nn.Sequential(
-                nn.Conv1d(self.cnn_hidden_channels, self.cnn_hidden_channels, kernel_size=self.cnn_kernel_size, padding='same'),
-                nn.BatchNorm1d(self.cnn_hidden_channels),
-                nn.ReLU(),
-                nn.MaxPool1d(kernel_size=2, stride=2)  # Further downsample sequence length
-            ))
-        
-        # Linear projection from CNN output to transformer hidden size
-        self.cnn_to_transformer = nn.Linear(self.cnn_hidden_channels, self.hidden_size)
-        
-        # Positional encoding to inject sequence order information
-        self.positional_encoder = SinusoidalPositionalEncoding(
-            d_model=self.hidden_size, 
-            dropout=self.dropout_prob, 
-            max_len=max_sequence_length
-        )
-        
-        # Transformer encoder layer
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model=self.hidden_size,
-            nhead=self.transformer_num_heads,
-            dropout=self.dropout_prob,
-            batch_first=True
-        )
-        
-        # Stack of N transformer encoders
-        self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=self.num_layers)
-        
-        # Fully connected layer for classification
-        self.fc = nn.Linear(self.hidden_size, self.num_classes)
-        
-    def forward(self, input_seq: torch.Tensor) -> torch.Tensor:
-        """
-        Forward pass of the CNN-Transformer hybrid HAR model.
 
-        Args:
-            input_seq (torch.Tensor): Input tensor of shape (batch_size, seq_len, input_size).
-
-        Returns:
-            torch.Tensor: Logits of shape (batch_size, num_classes).
-        """
-        batch_size, seq_len, _ = input_seq.shape
-        
-        # 1) Transpose for CNN: from (batch, seq_len, features) to (batch, features, seq_len)
-        x = input_seq.transpose(1, 2)  # Now shape: (batch_size, input_size, seq_len)
-        
-        # 2) Apply CNN layers for feature extraction
-        for cnn_layer in self.cnn_layers_list:
-            x = cnn_layer(x)
-            
-        # Get the new sequence length after CNN pooling operations
-        _, _, new_seq_len = x.shape
-        
-        # 3) Transpose back to (batch, seq_len, channels) for the transformer
-        x = x.transpose(1, 2)  # Now shape: (batch_size, new_seq_len, cnn_hidden_channels)
-        
-        # 4) Project CNN features to transformer dimension
-        x = self.cnn_to_transformer(x)  # Now shape: (batch_size, new_seq_len, hidden_size)
-        
-        # 5) Add positional encoding
-        x = self.positional_encoder(x)
-        
-        # 6) Pass through Transformer encoders
-        transformer_output = self.transformer_encoder(x)  # (batch_size, new_seq_len, hidden_size)
-        
-        # 7) Use the output of the final time step for classification
-        final_timestep_hidden_state = transformer_output[:, -1, :]  # (batch_size, hidden_size)
-        
-        # 8) Pass through fully connected layer
-        logits = self.fc(final_timestep_hidden_state)  # (batch_size, num_classes)
-        
-        return logits
-    
 
 class HarTransformerExperimental(HarBaseModel):
     """
@@ -343,42 +270,70 @@ class HarTransformerExperimental(HarBaseModel):
     def __init__(
         self, 
         input_size: int = 6, 
-        hidden_size: int = 32, # d_model
-        dim_feedforward: Optional[int] = None, # d_ff
-        num_layers: int = 2, # Number of Transformer encoder layers
-        num_heads: int = 2, # Number of attention heads
+        hidden_size: int = 32,
+        dim_feedforward: Optional[int] = None,
+        num_layers: int = 2,
+        num_heads: int = 2,
         dropout_prob: float = 0.1, 
         num_classes: int = 7,
-        cnn_kernel_size: int = 3,
+        cnn_kernel_sizes: Tuple[int] = (5, 3),
         cnn_stride: int = 1,
         cnn_padding: int = 1,
         max_sequence_length: int = 5000
     ):
+        """
+        Initializes the Transformer HAR model (experimental).
+
+        Args:
+            input_size (int, optional): Number of input features per time step. Defaults to 6.
+            hidden_size (int, optional): Dimensionality of the hidden state vector i.e. embedding size (d_model). 
+                Defaults to 32.
+            dim_feedforward (Optional[int], optional): Number of units in hidden layers of feed-forward network (d_ff). 
+                Defaults to None, in which case it will initialize to hidden_size * 4.
+            num_layers (int, optional): Number of Transformer encoder layers. Defaults to 2.
+            num_heads (int, optional): Number of attention heads. Defaults to 2.
+            dropout_prob (float, optional): Dropout probability. Defaults to 0.1.
+            num_classes (int, optional): Number of output classes. Defaults to 7.
+            cnn_kernel_sizes (Tuple[int], optional): Kernel sizes for CNN layer. Defaults to (5, 3).
+            cnn_stride (int, optional): Kernel stride for CNN layer. Defaults to 1.
+            cnn_padding (int, optional): Padding for CNN layer. Defaults to 1.
+            max_sequence_length (int, optional): Specifies the maximum sequence length for positional encoding. 
+                Defaults to 5000.
+        """
         super().__init__(input_size, hidden_size, num_layers, dropout_prob, num_classes)
         self.dim_feedforward = dim_feedforward or self.hidden_size * 4
         self.num_heads = num_heads
-        self.cnn_kernel_size = cnn_kernel_size
+        self.cnn_kernel_sizes = cnn_kernel_sizes
         self.cnn_stride = cnn_stride
         self.cnn_padding = cnn_padding
         self.max_sequence_length = max_sequence_length
         
-        # Embedding layer to project input features to hidden_size
-        self.embedding = nn.Linear(self.input_size, self.hidden_size)
-        # Note: nn.Embedding layer is usually used for embedding categorical variables
-        
-        # 1D CNN as tokenizer
+        # 1D CNN as tokenizer (output used as embeddings)
         self.cnn_tokenizer = nn.Sequential(
+            # CNN should not downsample too much as the input sequence length is not very long
             nn.Conv1d(
-                in_channels=self.hidden_size, 
-                out_channels=self.hidden_size,
-                kernel_size=self.cnn_kernel_size,
+                in_channels=self.input_size, 
+                out_channels=self.hidden_size, # Project to hidden_size (d_model)
+                kernel_size=self.cnn_kernel_sizes[0],
                 stride=self.cnn_stride,
                 padding=self.cnn_padding
             ),
             nn.ReLU(),
             nn.BatchNorm1d(self.hidden_size),
-            nn.Dropout(self.dropout_prob)
+            nn.Conv1d(
+                in_channels=self.hidden_size, 
+                out_channels=self.hidden_size,
+                kernel_size=self.cnn_kernel_sizes[1],
+                stride=self.cnn_stride,
+                padding=self.cnn_padding
+            ),
+            nn.ReLU(),
+            nn.BatchNorm1d(self.hidden_size),
+            nn.Dropout(self.dropout_prob),
         )
+        
+        # Add learnable CLS token (inspired by BERT): shape (1, 1, hidden_size) will be expanded per batch
+        self.cls_token = nn.Parameter(torch.zeros(1, 1, hidden_size))
         
         # Stack of N encoders
         # Rotary positional encoding is implemented within the attention layers
@@ -399,33 +354,25 @@ class HarTransformerExperimental(HarBaseModel):
         self.fc = nn.Linear(hidden_size, num_classes)
 
     def forward(self, input_seq: torch.Tensor) -> torch.Tensor:
-        """
-        Forward pass of the Transformer-based HAR model.
-
-        Args:
-            input_seq (torch.Tensor): Input tensor of shape (batch_size, seq_len, input_size).
-
-        Returns:
-            torch.Tensor: Logits of shape (batch_size, num_classes).
-        """
-        
-        # 1) Embed the input features
-        embedded = self.embedding(input_seq) # (batch_size, seq_len, hidden_size)
-        
-        # 2) Tokenize using CNN
-        cnn_input = embedded.permute(0, 2, 1) # (batch_size, hidden_size, seq_len)
+        # 1) Tokenize using CNN
+        cnn_input = input_seq.permute(0, 2, 1) # (batch_size, input_size, seq_len)
         cnn_output = self.cnn_tokenizer(cnn_input) # (batch_size, hidden_size, seq_len)
         embedded = cnn_output.permute(0, 2, 1) # (batch_size, seq_len, hidden_size)
+        
+        # 2) Prepend CLS token to each input sequence: trained to capture sequence-level information
+        batch_size = input_seq.size(0)
+        cls_tokens = self.cls_token.expand(batch_size, 1, -1) # (batch_size, 1, hidden_size)
+        embedded = torch.cat([cls_tokens, embedded], dim=1) # (batch_size, seq_len+1, hidden_size)
         
         # 3) Pass through Transformer encoders (we get refined, contextualized time step embeddings)
         for encoder_layer in self.transformer_encoder:
             embedded = encoder_layer(embedded)
-        
-        # 4) Use the output of the final time step for classification
-        final_timestep_hidden_state = embedded[:, -1, :]  # (batch_size, hidden_size)
+            
+        # 4) Use the CLS token as input to classification network
+        cls_output = embedded[:, 0, :]  # (batch_size, hidden_size)
         
         # 5) Pass through fully connected layer
-        logits = self.fc(final_timestep_hidden_state)  # (batch_size, num_classes)
+        logits = self.fc(cls_output)  # (batch_size, num_classes)
         
         return logits
     

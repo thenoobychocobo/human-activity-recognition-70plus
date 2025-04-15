@@ -106,8 +106,8 @@ class HARDataset(Dataset):
     def __init__(
         self, 
         df: pd.DataFrame, 
-        sequence_size: int = 100, 
-        stride: int = 50, 
+        sequence_size: int = 250, 
+        stride: int = 25, 
         gap_threshold: float = 0.05
     ):
         """
@@ -115,8 +115,8 @@ class HARDataset(Dataset):
 
         Args:
             df (pd.DataFrame): Input dataframe containing sensor data from HAR70+ dataset.
-            sequence_size (int, optional): Number of time steps in each sequence (sliding window size). Defaults to 100.
-            stride (int, optional): Step size for moving the sliding window. Defaults to 50.
+            sequence_size (int, optional): Number of time steps in each sequence (sliding window size). Defaults to 250.
+            stride (int, optional): Step size for moving the sliding window. Defaults to 25.
             gap_threshold (float, optional): Threshold (in seconds) to identify gaps in data. Defaults to 0.05.
         """
         self.sequence_size = sequence_size 
