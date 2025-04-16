@@ -8,6 +8,7 @@ import time
 from typing import *
 from datetime import datetime
 import matplotlib.pyplot as plt
+import warnings
 
 # Libs
 import numpy as np
@@ -138,12 +139,12 @@ def train_HAR70_model(
             # Save model if it has best validation F1 score
             if f1 > current_best_f1:
                 current_best_f1 = f1 # Update new current best f1 score
-                model_filename = f"{model_type}_best_F1.pth"
+                model_filename = f"Best_F1.pth"
                 save_model(model, model_filename, save_dir, verbose=verbose)
             
             # Save model after every specified number of epochs
             if epoch % save_interval == 0:
-                model_filename = f"{model_type}_epoch{epoch}.pth"
+                model_filename = f"Epoch{epoch}.pth"
                 save_model(model, model_filename, save_dir, verbose=verbose)
             
         if verbose: print("="*100) # Purely visual
@@ -362,6 +363,8 @@ def kfold_stratified_cv_for_har(
         Tuple[float, float, float, float]: A tuple containing the mean accuracy, F1 score, precision, and recall across
             all k folds.
     """
+    warnings.warn(f"⚠️ Code is outdated.")
+    
     model_kwargs = model_kwargs or {}
     optimizer_kwargs = optimizer_kwargs or {}
     

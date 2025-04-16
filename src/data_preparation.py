@@ -6,6 +6,8 @@
 import os
 from typing import *
 import zipfile
+import random
+import warnings
 
 # Libs
 import requests # pip install requests
@@ -13,7 +15,7 @@ import numpy as np
 import pandas as pd
 import torch
 from torch.utils.data import Dataset, Subset
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split, StratifiedShuffleSplit
 
 def download_har70plus_dataset(base_dir: str = "data") -> None:
     """
@@ -54,18 +56,31 @@ def download_har70plus_dataset(base_dir: str = "data") -> None:
             zip_ref.extractall(base_dir)
         print(f"✅ Files extracted to: {extract_folder}")
 
-def load_har70_csv_files(base_dir: str = "data") -> pd.DataFrame:
+def load_and_split_har70_csv_files(
+    base_dir: str = "data",
+    num_train: int = 12,
+    num_val: int = 3,
+    num_test: int = 3,
+    random_seed: int = 42
+) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """
-    Loads and combines all 18 HAR70+ dataset `.csv` files into a single DataFrame. 
+    Loads all 18 HAR70+ dataset `.csv` files (one for each subject) into train/val/test splits. 
 
     Args:
-        base_dir (str, optional): Base directory containing the extracted dataset. Defaults to "data".
+        base_dir (str, optional): Base directory containing the extracted `har70plus` dataset. Defaults to "data".
+        num_train (int, optional): Number of subjects to include in the training set. Defaults to 12.
+        num_val (int, optional): Number of subjects to include in the validation set. Defaults to 3.
+        num_test (int, optional): Number of subjects to include in the test set. Defaults to 3.
+        random_seed (int, optional): Random seed for reproducibility. Defaults to 42.
 
     Raises:
         FileNotFoundError: If the `har70plus` dataset folder is not found or if there are missing `.csv` files.
+        
+    Warns:
+        UserWarning: If the total number of used subjects does not equal 18, indicating some subjects are excluded.
 
     Returns:
-        pd.DataFrame: Combined DataFrame containing all subject data.
+        Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]: Train, Validation, and Test set DataFrames.
     """
     dataset_folder = os.path.join(base_dir, "har70plus")
     
@@ -74,30 +89,51 @@ def load_har70_csv_files(base_dir: str = "data") -> pd.DataFrame:
         raise FileNotFoundError(f"❌ Dataset folder not found: {dataset_folder}. "
                                 "Please run `download_har70plus_dataset()` first.")
     
-    # Compile DataFrames from all 18 CSV files
-    dfs: List[pd.DataFrame] = []
+    subject_ids = list(range(501, 519)) # 18 csv files: 501.csv to 518.csv
+    dfs: Dict[int, pd.DataFrame] = {}
     missing_files = []
-
-    for subject_code in range(501, 519):
+    
+    # Load each subject's data
+    for subject_code in subject_ids:
         file_path = os.path.join(dataset_folder, f"{subject_code}.csv")
         if os.path.exists(file_path):
-            dfs.append(pd.read_csv(file_path))
+            df = pd.read_csv(file_path)
+            dfs[subject_code] = df
         else:
-            missing_files.append(file_path)
-
+            missing_files.append(file_path) 
+    
     # If any files are missing, raise an error
     if missing_files:
         raise FileNotFoundError(f"❌ Missing files: {missing_files}")
+    
+    total_requested = num_train + num_val + num_test
+    total_available = len(subject_ids)
+    if total_requested != total_available:
+        warnings.warn(f"⚠️ Total subject count ({total_requested}) does not match available subjects ({total_available}). "
+                      f"{total_available - total_requested} subject(s) will be excluded.", UserWarning)
 
-    # Combine all CSVs into a single DataFrame
-    df_compiled = pd.concat(dfs, ignore_index=True)
+    # Shuffle and split subjects up
+    random.seed(random_seed)
+    random.shuffle(subject_ids)
+
+    train_subjects = subject_ids[:num_train]
+    val_subjects = subject_ids[num_train:num_train + num_val]
+    test_subjects = subject_ids[num_train + num_val:num_train + num_val + num_test]
+    
+    # Combine by splits
+    df_train = pd.concat([dfs[s] for s in train_subjects], ignore_index=True)
+    df_val = pd.concat([dfs[s] for s in val_subjects], ignore_index=True)
+    df_test = pd.concat([dfs[s] for s in test_subjects], ignore_index=True)
 
     # Remap labels
     label_mapping = {1: 0, 3: 1, 4: 2, 5: 3, 6: 4, 7: 5, 8: 6}
-    df_compiled["label"] = df_compiled["label"].map(label_mapping)
+    for df in [df_train, df_val, df_test]:
+        df["label"] = df["label"].map(label_mapping)
 
-    print(f"✅ Successfully loaded HAR70+ dataset ({len(df_compiled)} timestep samples).")
-    return df_compiled
+    print(f"✅ Successfully loaded HAR70+ dataset.")
+    print(f"   Number of Subjects: Train={len(train_subjects)}, Val={len(val_subjects)}, Test={len(test_subjects)}")
+    print(f"   Number of Samples:  Train={len(df_train)}, Val={len(df_val)}, Test={len(df_test)}")
+    return df_train, df_val, df_test
 
 class HARDataset(Dataset):
     """
@@ -182,9 +218,9 @@ def prepare_datasets(
     sequence_size: int = 100,
     stride: int = 50,
     gap_threshold: float = 0.05,
-    train_ratio: float = 0.8,
-    val_ratio: float = 0.1,
-    test_ratio: float = 0.1,
+    num_train: int = 12,
+    num_val: int = 3,
+    num_test: int = 3,
     random_state: int = 42,
     data_dir: str = "data",
     save_dir: str = "saved_components",
@@ -205,9 +241,9 @@ def prepare_datasets(
         stride (int, optional): Step size for moving the sliding window. Defaults to 50.
         gap_threshold (float, optional): Maximum allowed difference (in seconds) between consecutive samples. 
             Defaults to 0.05.
-        train_ratio (float, optional): Proportion of the dataset to include in the train split. Defaults to 0.8.
-        val_ratio (float, optional): Proportion of the dataset to include in the validation split. Defaults to 0.1.
-        test_ratio (float, optional): Proportion of the dataset to include in the test split. Defaults to 0.1.
+        num_train (int, optional): Number of subjects to include in the training set. Defaults to 12.
+        num_val (int, optional): Number of subjects to include in the validation set. Defaults to 3.
+        num_test (int, optional): Number of subjects to include in the test set. Defaults to 3.
         random_state (int, optional): Random seed for reproducibility (for scikit-learn's `train_test_split`). 
             Defaults to 42.
         data_dir (str, optional): Directory that contains the data. Defaults to "data".
@@ -224,50 +260,41 @@ def prepare_datasets(
     os.makedirs(save_dir, exist_ok=True)
 
     # Define paths for saved components
-    dataset_path = os.path.join(save_dir, 'hardataset.pt')
-    split_indices_path = os.path.join(save_dir, 'split_indices.pt')
+    train_path = os.path.join(save_dir, 'train_dataset.pt')
+    val_path = os.path.join(save_dir, 'val_dataset.pt')
+    test_path = os.path.join(save_dir, 'test_dataset.pt')
 
     # Load components if they exist and load_if_exists is True
-    if load_if_exists and all(os.path.exists(path) for path in [dataset_path, split_indices_path]):
-        print(f"✅ HARDataset object and split indices loaded from {save_dir}")
-        dataset = torch.load(dataset_path, weights_only=False)
-        split_indices = torch.load(split_indices_path, weights_only=False)
+    if load_if_exists and all(os.path.exists(path) for path in [train_path, val_path, test_path]):
+        print(f"✅ HARDataset objects (train/val/test) loaded from {save_dir}")
+        train_dataset = torch.load(train_path, weights_only=False)
+        val_dataset = torch.load(val_path, weights_only=False)
+        test_dataset = torch.load(test_path, weights_only=False)
+        
     else:
         print(f"🔄 Preparing dataset: Sequence Size: {sequence_size}, Stride: {stride}, Gap Threshold: {gap_threshold}")
         # 0. Download the data
         download_har70plus_dataset(base_dir=data_dir)
         
         # 1. Load the downloaded data
-        df = load_har70_csv_files(base_dir=data_dir)
-        
-        # 2. Create the HARDataset object
-        dataset = HARDataset(df, sequence_size, stride, gap_threshold)
-        
-        # 3. Perform stratified splitting
-        labels = np.array([dataset[i][1] for i in range(len(dataset))])
-        train_idx, test_idx = train_test_split(
-            np.arange(len(dataset)), 
-            test_size=test_ratio, 
-            stratify=labels, 
-            random_state=random_state
+        df_train, df_val, df_test = load_and_split_har70_csv_files(
+            base_dir=data_dir,
+            num_train=num_train,
+            num_val=num_val,
+            num_test=num_test,
+            random_seed=random_state
         )
-        train_idx, val_idx = train_test_split(
-            train_idx, 
-            test_size=val_ratio / (train_ratio + val_ratio),  # Adjust for the correct split ratio
-            stratify=labels[train_idx], 
-            random_state=random_state
-        )
-        split_indices = {'train_idx': train_idx, 'val_idx': val_idx, 'test_idx': test_idx}
         
-        # Save components for future use
-        torch.save(dataset, dataset_path)
-        torch.save(split_indices, split_indices_path)
-        print(f"✅ Components (HARDataset object and split indices) saved to {save_dir}")
-
-    # Recreate subsets
-    train_dataset = Subset(dataset, split_indices['train_idx'])
-    val_dataset = Subset(dataset, split_indices['val_idx'])
-    test_dataset = Subset(dataset, split_indices['test_idx'])
+        # 2. Create the HARDataset objects
+        train_dataset = HARDataset(df_train, sequence_size, stride, gap_threshold)
+        val_dataset = HARDataset(df_val, sequence_size, stride, gap_threshold)
+        test_dataset = HARDataset(df_test, sequence_size, stride, gap_threshold)
+        
+        # 3. Save datasets for future use
+        torch.save(train_dataset, train_path)
+        torch.save(val_dataset, val_path)
+        torch.save(test_dataset, test_path)
+        print(f"✅ HARDataset objects saved to {save_dir}")
 
     print(f"✅ Created train, validation, and test datasets.")
     return train_dataset, val_dataset, test_dataset
@@ -275,12 +302,15 @@ def prepare_datasets(
 # Normalization Utils
 class Normalizer:
     """Normalization utility for standardizing input features."""
-    def __init__(self):
+    def __init__(self, training_dataset: Optional[HARDataset] = None):
         """
         Constructs a `Normalizer` instance.
         """
         self.mean = None
         self.std = None
+        
+        if training_dataset:
+            self.fit(training_dataset)
         
     def to(self, device: torch.device):
         """Move normalization statistics to the specified device."""
