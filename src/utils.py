@@ -93,13 +93,7 @@ def plot_and_save_confusion_matrix(
     file_name: str = "confusion_matrix",
     figsize: Tuple[int, int] = (10, 8),
     class_names: Optional[List[str]] = None,
-):
-    # Save confusion matrix
-    matrix_path = os.path.join(save_dir, file_name + ".npy")
-    np.save(matrix_path, conf_matrix)
-    # npy files can be loaded with: np.load()
-    print(f"✅ Confusion Matrix saved to: {matrix_path}")
-    
+):  
     # Plot confusion matrix and save visualization
     plot_path = os.path.join(save_dir, file_name + ".png") # add file extension
     
@@ -227,14 +221,19 @@ def ignore_classes(
     
     return updated_conf_matrix, updated_class_names
 
-def save_and_compute_metrics_from_confusion_matrix(
+def save_confusion_matrix_and_metrics(
     save_dir: str,
-    conf_matrix: np.ndarray,
+    conf_matrix_unnormalized: np.ndarray,
     file_name: str = "confusion_matrix"
 ) -> Dict[str, float]:
+    # Save confusion matrix
+    matrix_path = os.path.join(save_dir, file_name + ".npy")
+    np.save(matrix_path, conf_matrix_unnormalized) # npy files can be loaded with: np.load()
+    print(f"✅ Confusion Matrix saved to: {matrix_path}")
+    
     # Compute metrics from the confusion matrix
     metric_path = os.path.join(save_dir, file_name + "_metrics.txt")
-    metric_results: Dict[str: float] = compute_metrics_from_confusion_matrix(conf_matrix)
+    metric_results: Dict[str: float] = compute_metrics_from_confusion_matrix(conf_matrix_unnormalized)
     with open(metric_path, "w") as f:
         f.write(pprint.pformat(metric_results, sort_dicts=True))
     print(f"✅ Confusion Matrix Metrics saved to: {metric_path}")
