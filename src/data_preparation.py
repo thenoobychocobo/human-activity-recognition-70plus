@@ -8,6 +8,7 @@ from typing import *
 import zipfile
 import random
 import warnings
+from collections import Counter
 
 # Libs
 import requests # pip install requests
@@ -15,90 +16,119 @@ import numpy as np
 import pandas as pd
 import torch
 from torch.utils.data import Dataset, Subset
-from sklearn.model_selection import train_test_split, StratifiedShuffleSplit
 
-def download_har70plus_dataset(base_dir: str = "data") -> None:
+def download_har_datasets(base_dir: str = "data") -> None:
     """
-    Downloads and extracts the HAR70+ dataset from the 
-    [UCI repository](https://archive.ics.uci.edu/static/public/780/har70.zip).
+    Downloads and extracts the [HARTH](https://archive.ics.uci.edu/dataset/779/harth) dataset and the
+    [HAR70+](https://archive.ics.uci.edu/dataset/780/har70) dataset from their respective UCI repositories.
 
     Args:
-        base_dir (str, optional): Directory where the dataset should be stored. Defaults to "data".
+        base_dir (str, optional): Directory where the datasets should be stored. Defaults to "data".
 
     Raises:
         RuntimeError: If the dataset download fails.
     """
     os.makedirs(base_dir, exist_ok=True) # Create base directory
-    url = "https://archive.ics.uci.edu/static/public/780/har70.zip"
-    zip_path = os.path.join(base_dir, "har70.zip")
-    extract_folder = os.path.join(base_dir, "har70plus")
+    d = {
+        "HARTH": {
+            "url": "https://archive.ics.uci.edu/static/public/779/harth.zip",
+            "zip_path": os.path.join(base_dir, "harth.zip"),
+            "extract_path": os.path.join(base_dir, "harth")
+        },
+        "HAR70+": {
+            "url": "https://archive.ics.uci.edu/static/public/780/har70.zip",
+            "zip_path": os.path.join(base_dir, "har70.zip"),
+            "extract_path": os.path.join(base_dir, "har70plus")
+        }
+        
+    }
+    
+    for dataset_name in d.keys():
+        url = d[dataset_name]["url"]
+        zip_path = d[dataset_name]["zip_path"] 
+        extract_folder = d[dataset_name]["extract_path"]
 
-    # Skip download if the zip file already exists
-    if os.path.exists(zip_path):
-        print(f"📂 Dataset already downloaded: {zip_path}")
-    else:
-        print(f"⬇️ Downloading HAR70+ dataset to {zip_path}...")
-        response = requests.get(url, stream=True)
-        if response.status_code != 200:
-            raise RuntimeError(f"❌ Failed to download dataset. HTTP Status Code: {response.status_code}")
+        # Skip download if the zip file already exists
+        if os.path.exists(zip_path):
+            print(f"📂 {dataset_name} dataset already downloaded: {zip_path}")
+        else:
+            print(f"⬇️ Downloading {dataset_name} dataset to {zip_path}...")
+            response = requests.get(url, stream=True)
+            if response.status_code != 200:
+                raise RuntimeError(f"❌ Failed to download {dataset_name} dataset. HTTP Status Code: {response.status_code}")
 
-        with open(zip_path, "wb") as file:
-            for chunk in response.iter_content(chunk_size=1024):
-                file.write(chunk)
-        print(f"✅ Download complete: {zip_path}")
+            with open(zip_path, "wb") as file:
+                for chunk in response.iter_content(chunk_size=1024):
+                    file.write(chunk)
+            print(f"✅ Download complete: {zip_path}")
 
-    # Skip extraction if dataset is already extracted
-    if os.path.exists(extract_folder):
-        print(f"📂 Dataset already extracted in {extract_folder}")
-    else:
-        print(f"📦 Extracting dataset to {extract_folder}...")
-        with zipfile.ZipFile(zip_path, "r") as zip_ref:
-            zip_ref.extractall(base_dir)
-        print(f"✅ Files extracted to: {extract_folder}")
-
-def load_and_split_har70_csv_files(
+        # Skip extraction if dataset is already extracted
+        if os.path.exists(extract_folder):
+            print(f"📂 {dataset_name} dataset already extracted in {extract_folder}")
+        else:
+            print(f"📦 Extracting {dataset_name} dataset to {extract_folder}...")
+            with zipfile.ZipFile(zip_path, "r") as zip_ref:
+                zip_ref.extractall(base_dir)
+            print(f"✅ Files extracted to: {extract_folder}")
+            
+def load_har_subject_data(
     base_dir: str = "data",
-    num_train: int = 12,
-    num_val: int = 3,
-    num_test: int = 3,
-    random_seed: int = 42
-) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    fix_s006: bool = True,
+) -> Dict[str, pd.DataFrame]:
     """
-    Loads all 18 HAR70+ dataset `.csv` files (one for each subject) into train/val/test splits. 
+    Load all `.csv` files (one for each subject) from the HARTH and HAR70+ datasets into dataframes.
+    
+    Assumes that the datasets have already been downloaded and extracted using `download_har_datasets()`.
 
     Args:
-        base_dir (str, optional): Base directory containing the extracted `har70plus` dataset. Defaults to "data".
-        num_train (int, optional): Number of subjects to include in the training set. Defaults to 12.
-        num_val (int, optional): Number of subjects to include in the validation set. Defaults to 3.
-        num_test (int, optional): Number of subjects to include in the test set. Defaults to 3.
-        random_seed (int, optional): Random seed for reproducibility. Defaults to 42.
-
+        base_dir (str, optional): Base directory containing the extracted. Defaults to "data".
+        fix_s006 (bool, optional): Whether to fix a discrepancy in `S006.csv` (HARTH dataset) downloaded from the 
+            UCI repository, in which the data is not downsampled down to 50Hz. This should be enabled, unless you have 
+            downloaded a corrected version of the data elsewhere. Defaults to True.
+        
     Raises:
         FileNotFoundError: If the `har70plus` dataset folder is not found or if there are missing `.csv` files.
-        
-    Warns:
-        UserWarning: If the total number of used subjects does not equal 18, indicating some subjects are excluded.
 
     Returns:
-        Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]: Train, Validation, and Test set DataFrames.
+        List[pd.DataFrame]: Dictionary containing the IDs of subjects (across both datasets) as keys and their 
+            corresponding dataframes as values.
     """
-    dataset_folder = os.path.join(base_dir, "har70plus")
+    harth_folder = os.path.join(base_dir, "harth")
+    har70plus_folder = os.path.join(base_dir, "har70plus")
     
     # Ensure dataset folder exists
-    if not os.path.exists(dataset_folder):
-        raise FileNotFoundError(f"❌ Dataset folder not found: {dataset_folder}. "
-                                "Please run `download_har70plus_dataset()` first.")
-    
-    subject_ids = list(range(501, 519)) # 18 csv files: 501.csv to 518.csv
-    dfs: Dict[int, pd.DataFrame] = {}
-    missing_files = []
+    if not os.path.exists(harth_folder):
+        raise FileNotFoundError(f"❌ Dataset folder not found: {harth_folder}. "
+                                "Please run `download_har_datasets()` first.")
+    if not os.path.exists(har70plus_folder):
+        raise FileNotFoundError(f"❌ Dataset folder not found: {har70plus_folder}. "
+                                "Please run `download_har_datasets()` first.")
     
     # Load each subject's data
-    for subject_code in subject_ids:
-        file_path = os.path.join(dataset_folder, f"{subject_code}.csv")
+    subject_dfs: Dict[str, pd.DataFrame] = {}
+    missing_files = []
+    
+    # (1) HARTH Dataset
+    harth_ids = [
+        "S006", "S008", "S009", "S010", "S012", "S013", "S014", "S015", "S016",
+        "S017", "S018", "S019", "S020", "S021", "S022", "S023", "S024", "S025",
+        "S026", "S027", "S028", "S029"
+    ]
+    for id in harth_ids:
+        file_path = os.path.join(harth_folder, f"{id}.csv")
         if os.path.exists(file_path):
             df = pd.read_csv(file_path)
-            dfs[subject_code] = df
+            subject_dfs[id] = df
+        else:
+            missing_files.append(file_path) 
+    
+    # (2) HAR70+ Dataset
+    har70plus_ids = [str(i) for i in range(501, 519)] # 18 csv files: 501.csv to 518.csv
+    for id in har70plus_ids:
+        file_path = os.path.join(har70plus_folder, f"{id}.csv")
+        if os.path.exists(file_path):
+            df = pd.read_csv(file_path)
+            subject_dfs[id] = df
         else:
             missing_files.append(file_path) 
     
@@ -106,58 +136,147 @@ def load_and_split_har70_csv_files(
     if missing_files:
         raise FileNotFoundError(f"❌ Missing files: {missing_files}")
     
+    # Fix S006.csv by manually downsampling
+    if fix_s006: 
+        subject_dfs["S006"] = downsample_s006_data(subject_dfs["S006"])
+    
+    # Remap labels
+    # For PyTorch, labels must be integers in the range [0, num_classes - 1]
+    label_map = {
+        1: 0, 2: 1, 3: 2, 4: 3, 5: 4, 6: 5, 7: 6, 8: 7,
+        13: 8, 14: 9, 130: 10, 140: 11 
+    }
+    for df in subject_dfs.values():
+        df["label"] = df["label"].map(label_map)
+        
+    print(f"✅ Successfully loaded recorded data of subjects from HARTH and HAR70+ datasets.")
+    return subject_dfs
+
+def downsample_s006_data(df_s006: pd.DataFrame) -> pd.DataFrame:
+    """
+    This function is meant for downsampling the recorded data of `S006.csv` (HARTH dataset) from 100Hz to 50Hz. 
+    
+    The HARTH paper notes that some subjects were originally recorded at 100Hz and subsequently downsampled to 50Hz. 
+    However, it appears that for `S006.csv`, the dataset creators mistakenly left the data **undownsampled** in the 
+    dataset files available for download from the UCI repository. This function is a helper function designed to fix
+    this discrepancy. 
+
+    Args:
+        df_s006 (pd.DataFrame): The dataframe obtained from loading `S006.csv`. 
+
+    Returns:
+        pd.DataFrame: The downsampled data (50Hz).
+    """
+    # Convert timestamps
+    df_s006['timestamp_datetime'] = pd.to_datetime(df_s006['timestamp'])
+
+    # Compute time differences between consecutive rows
+    df_s006['time_diff'] = df_s006['timestamp_datetime'].diff().dt.total_seconds()
+
+    # Identify "breakpoints" where time_diff is large (e.g., >0.03s, allow slight noise)
+    gap_threshold = 0.03
+    breakpoints = df_s006.index[df_s006['time_diff'] > gap_threshold].tolist()
+
+    # Add first and last index to the list of breakpoints
+    breakpoints = [0] + breakpoints + [len(df_s006)]
+
+    # Create a list to store downsampled segments
+    downsampled_segments = []
+
+    # Process each continuous segment separately
+    for start_idx, end_idx in zip(breakpoints[:-1], breakpoints[1:]):
+        segment = df_s006.iloc[start_idx:end_idx]
+        downsampled_segment = segment.iloc[::2]  # Take every 2nd row (downsample 100Hz -> 50Hz)
+        downsampled_segments.append(downsampled_segment)
+
+    # Concatenate all downsampled segments
+    df_s006_downsampled = pd.concat(downsampled_segments).reset_index(drop=True)
+
+    # Drop helper columns
+    df_s006_downsampled = df_s006_downsampled.drop(columns=['timestamp_datetime', 'time_diff'])
+    
+    return df_s006_downsampled
+    
+
+def split_har_subject_data(
+    subject_dfs: Dict[str, pd.DataFrame],
+    num_train: int = 32,
+    num_val: int = 4,
+    num_test: int = 4,
+    random_seed: int = 42
+) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """
+    Combines recorded subject data into train, validation, and test splits. The splits are done subject-wise i.e. 
+    subjects are grouped together. 
+
+    Args:
+        subject_dfs (Dict[str, pd.DataFrame]): Dictionary containing recorded subject data. Obtained by running the 
+            `load_har_subject_data` function.  
+        num_train (int, optional): Number of subjects to include in the training set. Defaults to 32.
+        num_val (int, optional): Number of subjects to include in the validation set. Defaults to 4.
+        num_test (int, optional): Number of subjects to include in the test set. Defaults to 4.
+        random_seed (int, optional): Random seed for reproducibility. Defaults to 42.
+        
+    Warns:
+        UserWarning: If the total number of subjects to be used does not equal 40 
+            (i.e. `num_train + num_val + num_test != 40`), indicating that some subjects are excluded. This means that
+            not all of the available data is being used.
+
+    Returns:
+        Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]: Train, Validation, and Test sets.
+    """
     total_requested = num_train + num_val + num_test
-    total_available = len(subject_ids)
+    total_available = 40 # 22 from HARTH, 18 from HAR70+
     if total_requested != total_available:
-        warnings.warn(f"⚠️ Total subject count ({total_requested}) does not match available subjects ({total_available}). "
-                      f"{total_available - total_requested} subject(s) will be excluded.", UserWarning)
-
+        warnings.warn(f"⚠️ Total subject count ({total_requested}) does not match available subjects ({total_available}).", UserWarning)
+    
     # Shuffle and split subjects up
-    random.seed(random_seed)
-    random.shuffle(subject_ids)
+    dfs: List[pd.DataFrame] = list(subject_dfs.values())
+    random.seed(random_seed)  
+    random.shuffle(dfs)
 
-    train_subjects = subject_ids[:num_train]
-    val_subjects = subject_ids[num_train:num_train + num_val]
-    test_subjects = subject_ids[num_train + num_val:num_train + num_val + num_test]
+    train_subjects = dfs[:num_train]
+    val_subjects = dfs[num_train:num_train + num_val]
+    test_subjects = dfs[num_train + num_val:num_train + num_val + num_test]
     
     # Combine by splits
-    df_train = pd.concat([dfs[s] for s in train_subjects], ignore_index=True)
-    df_val = pd.concat([dfs[s] for s in val_subjects], ignore_index=True)
-    df_test = pd.concat([dfs[s] for s in test_subjects], ignore_index=True)
-
-    # Remap labels
-    label_mapping = {1: 0, 3: 1, 4: 2, 5: 3, 6: 4, 7: 5, 8: 6}
-    for df in [df_train, df_val, df_test]:
-        df["label"] = df["label"].map(label_mapping)
-
-    print(f"✅ Successfully loaded HAR70+ dataset.")
-    print(f"   Number of Subjects: Train={len(train_subjects)}, Val={len(val_subjects)}, Test={len(test_subjects)}")
-    print(f"   Number of Samples:  Train={len(df_train)}, Val={len(df_val)}, Test={len(df_test)}")
+    # Set join="inner" to keep only common columns (S021 and S023 have additional columns that are not needed)
+    df_train = pd.concat(train_subjects, ignore_index=True, join="inner")
+    df_val = pd.concat(val_subjects, ignore_index=True, join="inner")
+    df_test = pd.concat(test_subjects, ignore_index=True, join="inner")
+    
     return df_train, df_val, df_test
+
 
 class HARDataset(Dataset):
     """
-    PyTorch Dataset for handling HAR70+ time series data with sequence processing.
+    PyTorch Dataset for handling acceloremeter time series data (from HARTH and HAR70+ datasets) with sequence processing.
     """
     def __init__(
         self, 
         df: pd.DataFrame, 
         sequence_size: int = 250, 
-        stride: int = 25, 
-        gap_threshold: float = 0.05
+        stride: int = 125, 
+        gap_threshold: float = 0.1,
+        majority_label: bool = True
     ):
         """
         Construct a `HARDataset` instance.
 
         Args:
-            df (pd.DataFrame): Input dataframe containing sensor data from HAR70+ dataset.
+            df (pd.DataFrame): Input dataframe containing sensor data from HARTH and HAR70+ datasets.
             sequence_size (int, optional): Number of time steps in each sequence (sliding window size). Defaults to 250.
-            stride (int, optional): Step size for moving the sliding window. Defaults to 25.
-            gap_threshold (float, optional): Threshold (in seconds) to identify gaps in data. Defaults to 0.05.
+            stride (int, optional): Step size for moving the sliding window. Defaults to 125.
+            gap_threshold (float, optional): Threshold (in seconds) to identify gaps in data. Defaults to 0.1.
+            majority_label (bool, optional): If True, each sequence is labeled using the majority class across 
+                time steps in the sequence. This can improve label stability and robustness against transitions and
+                noise, and is appropriate for HAR as we are predicting a stable activity (e.g. walking vs sitting) over
+                a whole sequence.
         """
         self.sequence_size = sequence_size 
         self.stride = stride
         self.gap_threshold = gap_threshold  
+        self.majority_label = majority_label
         
         # Convert timestamp and calculate time gaps
         df['timestamp'] = pd.to_datetime(df['timestamp'])
@@ -211,49 +330,63 @@ class HARDataset(Dataset):
         start_idx = self.sequence_start_indices[idx]
         window_data = self.df.iloc[start_idx: start_idx + self.sequence_size]
         X = torch.tensor(window_data[self.feature_cols].values, dtype=torch.float32) # shape (sequence_size, num_features)
-        y = torch.tensor(window_data[self.label_col].values[-1], dtype=torch.long) # Only the label of the last sample in the sequence
+        
+        if self.majority_label:
+            # Majority label across sequence is taken as the sequence label
+            label_sequence = window_data[self.label_col].values
+            label_counts = Counter(label_sequence)
+            majority_label = label_counts.most_common(1)[0][0]
+            y = torch.tensor(majority_label, dtype=torch.long)
+        else:
+            # Label of last time step is taken to be label of entire sequence
+            last_label = window_data[self.label_col].values[-1]
+            y = torch.tensor(last_label, dtype=torch.long) 
         return X, y
     
 def prepare_datasets(
-    sequence_size: int = 100,
-    stride: int = 50,
-    gap_threshold: float = 0.05,
-    num_train: int = 12,
-    num_val: int = 3,
-    num_test: int = 3,
+    sequence_size: int = 250,
+    stride: int = 125,
+    gap_threshold: float = 0.1,
+    majority_label: bool = True,
+    num_train: int = 32,
+    num_val: int = 4,
+    num_test: int = 4,
     random_state: int = 42,
     data_dir: str = "data",
-    save_dir: str = "saved_components",
+    save_dir: str = "dataset_cache",
     load_if_exists: bool = True
-) -> Tuple[Subset, Subset, Subset]:
+) -> Tuple[HARDataset, HARDataset, HARDataset]:
     """
-    Prepares train, validation, and test datasets for HAR70+ data. On the first run, it will download the
-    HAR70+ dataset and compile the data such that each sample is a sequence of sensor data over the specified number of
-    time steps, with the label of the sequence being the activity label of the last time step. This data is split into 
-    training, validation, and test datasets in a stratified manner based on activity labels of each sequence.
+    Prepares train, validation, and test datasets for HAR data. On the first run, it will download the HARTH and HAR70+ 
+    datasets, in which the recorded data of each subject is in its own `.csv` files. The subjects are split into
+    training, validation, and test sets. The subject data within each set is compiled and then used to create
+    `HARDataset` objects. When constructing the dataset objects, sample sequences are created by sliding a window across
+    time steps.  
     
-    Importantly, this function will save the pre-split compiled `HARDataset` object and the indices for each split into 
-    the specified directory, as `hardataset.pt` and `split_indices.pt` respectively. This function will load these files
-    in if they already exist in the specified directory and to avoid recomputation (unless `load_if_exists` is `False`).
+    Importantly, this function will cache the `HARDataset` objects for each split in the specified directory
+    (`train_dataset.pt`, `val_dataset.pt`, `test_dataset.pt`). This function will load these files in if they already 
+    exist in the specified directory and to avoid recomputation (unless `load_if_exists` is `False`).
 
     Args:
-        sequence_size (int, optional): Number of time steps in each sequence (sliding window size). Defaults to 100.
-        stride (int, optional): Step size for moving the sliding window. Defaults to 50.
+        sequence_size (int, optional): Number of time steps in each sequence (sliding window size). Defaults to 250.
+        stride (int, optional): Step size for moving the sliding window. Defaults to 125.
         gap_threshold (float, optional): Maximum allowed difference (in seconds) between consecutive samples. 
-            Defaults to 0.05.
-        num_train (int, optional): Number of subjects to include in the training set. Defaults to 12.
-        num_val (int, optional): Number of subjects to include in the validation set. Defaults to 3.
-        num_test (int, optional): Number of subjects to include in the test set. Defaults to 3.
-        random_state (int, optional): Random seed for reproducibility (for scikit-learn's `train_test_split`). 
-            Defaults to 42.
+            Defaults to 0.1.
+        majority_label (bool, optional): If True, each sequence is labeled using the majority class across 
+            time steps in the sequence. This can improve label stability and robustness against transitions and
+            noise, and is appropriate for HAR as we are predicting a stable activity (e.g. walking vs sitting) over
+            a whole sequence.
+        num_train (int, optional): Number of subjects to include in the training set. Defaults to 32.
+        num_val (int, optional): Number of subjects to include in the validation set. Defaults to 4.
+        num_test (int, optional): Number of subjects to include in the test set. Defaults to 4.
+        random_state (int, optional): Random seed for reproducibility. Defaults to 42.
         data_dir (str, optional): Directory that contains the data. Defaults to "data".
-        save_dir (str, optional): Directory to save/load components. Defaults to "saved_components".
-        load_if_exists (bool, optional): If True, loads saved components if they exists; otherwise, recomputes. 
+        save_dir (str, optional): Directory to save/load components. Defaults to "dataset_cache".
+        load_if_exists (bool, optional): If True, loads cached dataset objects if they exists; otherwise, recomputes. 
             Defaults to True.
 
     Returns:
-        Tuple[Subset, Subset, Subset]: Tuple containing the normalized train, validation, and test sets (as
-        `Subset` objects of compiled `HARDataset`).
+        Tuple[HARDataset, HARDataset, HARDataset]: The Train, Validation, and Test sets.
     """
 
     # Create save directory if it doesn't exist
@@ -274,11 +407,12 @@ def prepare_datasets(
     else:
         print(f"🔄 Preparing dataset: Sequence Size: {sequence_size}, Stride: {stride}, Gap Threshold: {gap_threshold}")
         # 0. Download the data
-        download_har70plus_dataset(base_dir=data_dir)
+        download_har_datasets(base_dir=data_dir)
         
-        # 1. Load the downloaded data
-        df_train, df_val, df_test = load_and_split_har70_csv_files(
-            base_dir=data_dir,
+        # 1. Load and process the downloaded data
+        subject_dfs = load_har_subject_data(base_dir=data_dir)
+        df_train, df_val, df_test = split_har_subject_data(
+            subject_dfs=subject_dfs,
             num_train=num_train,
             num_val=num_val,
             num_test=num_test,
@@ -286,9 +420,9 @@ def prepare_datasets(
         )
         
         # 2. Create the HARDataset objects
-        train_dataset = HARDataset(df_train, sequence_size, stride, gap_threshold)
-        val_dataset = HARDataset(df_val, sequence_size, stride, gap_threshold)
-        test_dataset = HARDataset(df_test, sequence_size, stride, gap_threshold)
+        train_dataset = HARDataset(df_train, sequence_size, stride, gap_threshold, majority_label)
+        val_dataset = HARDataset(df_val, sequence_size, stride, gap_threshold, majority_label)
+        test_dataset = HARDataset(df_test, sequence_size, stride, gap_threshold, majority_label)
         
         # 3. Save datasets for future use
         torch.save(train_dataset, train_path)
@@ -296,58 +430,5 @@ def prepare_datasets(
         torch.save(test_dataset, test_path)
         print(f"✅ HARDataset objects saved to {save_dir}")
 
-    print(f"✅ Created train, validation, and test datasets.")
+    print(f"✅ Created train, validation, and test dataset objects.")
     return train_dataset, val_dataset, test_dataset
-
-# Normalization Utils
-class Normalizer:
-    """Normalization utility for standardizing input features."""
-    def __init__(self, training_dataset: Optional[HARDataset] = None):
-        """
-        Constructs a `Normalizer` instance.
-        """
-        self.mean = None
-        self.std = None
-        
-        if training_dataset:
-            self.fit(training_dataset)
-        
-    def to(self, device: torch.device):
-        """Move normalization statistics to the specified device."""
-        self.mean = self.mean.to(device)
-        self.std = self.std.to(device)
-        
-    def __call__(self, x: torch.Tensor) -> torch.Tensor:
-        """Applies normalization to input tensor."""
-        # Move normalization statistics to same device as input
-        if (x.device != self.mean.device) or (x.device != self.std.device):
-            self.to(x.device)
-        
-        # x is of shape (x - self.mean) / self.std
-        x_norm = (x - self.mean) / (self.std + 1e-8)
-        return x_norm
-    
-    def fit(self, training_dataset: HARDataset | Subset) -> Dict[str, torch.Tensor]:
-        """
-        Compute the mean and standard deviation of the input training dataset for future normalization. Returns the two
-        values and also updates its corresponding attributes.
-
-        Args:
-            training_dataset (HARDataset | Subset): Training dataset to fit to (compute normalization statistics from).
-
-        Returns:
-            Dict[str, torch.Tensor]: Dictionary containing computed mean and standard deviation values.
-        """
-        # Compute normalization statistics from given training dataset
-        all_features = [
-            training_dataset[i][0] # X of shape (sequence_size, num_features)
-            for i in range(len(training_dataset))
-        ]
-        
-        # Stack all sequences along the time dimension
-        all_features = torch.cat(all_features, dim=0)  # Shape: (total_time_steps, num_features)
-        
-        # Compute mean and std per feature
-        self.mean = torch.mean(all_features, dim=0)  # Shape: (num_features,)
-        self.std = torch.std(all_features, dim=0) # Shape: (num_features,)
-        return {'mean': self.mean, 'std': self.std}

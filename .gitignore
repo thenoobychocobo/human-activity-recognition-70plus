@@ -1,5 +1,5 @@
 data/*
-saved_components/*
+dataset_cache/*
 results/*
 models/*
 **/__pycache__/

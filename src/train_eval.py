@@ -20,7 +20,61 @@ from sklearn.model_selection import StratifiedKFold
 
 # Custom
 from src.models import HarBaseModel
-from src.data_preparation import Normalizer, HARDataset
+from src.data_preparation import HARDataset
+
+
+# Normalization Utils
+class Normalizer:
+    """Normalization utility for standardizing input features."""
+    def __init__(self, training_dataset: Optional[HARDataset] = None):
+        """
+        Constructs a `Normalizer` instance.
+        """
+        self.mean = None
+        self.std = None
+        
+        if training_dataset:
+            self.fit(training_dataset)
+        
+    def to(self, device: torch.device):
+        """Move normalization statistics to the specified device."""
+        self.mean = self.mean.to(device)
+        self.std = self.std.to(device)
+        
+    def __call__(self, x: torch.Tensor) -> torch.Tensor:
+        """Applies normalization to input tensor."""
+        # Move normalization statistics to same device as input
+        if (x.device != self.mean.device) or (x.device != self.std.device):
+            self.to(x.device)
+        
+        # x is of shape (x - self.mean) / self.std
+        x_norm = (x - self.mean) / (self.std + 1e-8)
+        return x_norm
+    
+    def fit(self, training_dataset: HARDataset | Subset) -> Dict[str, torch.Tensor]:
+        """
+        Compute the mean and standard deviation of the input training dataset for future normalization. Returns the two
+        values and also updates its corresponding attributes.
+
+        Args:
+            training_dataset (HARDataset | Subset): Training dataset to fit to (compute normalization statistics from).
+
+        Returns:
+            Dict[str, torch.Tensor]: Dictionary containing computed mean and standard deviation values.
+        """
+        # Compute normalization statistics from given training dataset
+        all_features = [
+            training_dataset[i][0] # X of shape (sequence_size, num_features)
+            for i in range(len(training_dataset))
+        ]
+        
+        # Stack all sequences along the time dimension
+        all_features = torch.cat(all_features, dim=0)  # Shape: (total_time_steps, num_features)
+        
+        # Compute mean and std per feature
+        self.mean = torch.mean(all_features, dim=0)  # Shape: (num_features,)
+        self.std = torch.std(all_features, dim=0) # Shape: (num_features,)
+        return {'mean': self.mean, 'std': self.std}
 
 
 def train_HAR70_model(
@@ -37,7 +91,7 @@ def train_HAR70_model(
     """
     Trains the given model on provided HAR70+ dataset (via dataloaders). Will evaluate the model's performance on the
     validation set every epoch. Model's parameters are saved after each specified number of epochs in the specified 
-    base directory. The best performing model (f1) is also saved.
+    base directory. The best performing models for f1 and accuracy are also saved.
 
     Args:
         model (HarBaseModel): HAR model to train.
@@ -55,8 +109,8 @@ def train_HAR70_model(
             Defaults to True.
             
     Returns:
-        Tuple[List[float], List[float], List[float], List[float], List[float], List[float], Normalizer]: A tuple 
-            containing the history (values per epoch) for: training loss, validation loss, accuracy, f1, precision, 
+        Tuple[List[float], List[float], List[float], List[float], List[float], List[float], List[float], Normalizer]: A tuple 
+            containing the history (values per epoch) for: training loss, validation loss, accuracy (micro), accuracy (macro), f1, precision, 
             and recall, along with a `Normalizer` already fitted on the training data. 
     """
     if verbose: print("Beginning training session...")
@@ -67,7 +121,7 @@ def train_HAR70_model(
     if verbose: print(f"Model moved to {device}")
     
     criterion = nn.CrossEntropyLoss()
-    training_loss_history, validation_loss_history, accuracy_history, f1_history, precision_history, recall_history = [], [], [], [], [], []
+    training_loss_history, validation_loss_history, micro_accuracy_history, macro_accuracy_history, f1_history, precision_history, recall_history = [], [], [], [], [], [], []
     
     # Create subdirectory to automatically save models to during training session
     if base_dir is not None:
@@ -79,8 +133,9 @@ def train_HAR70_model(
         if verbose: print(f"(1) Creating subdirectory ({save_dir}) for saving model params...")
         os.makedirs(save_dir, exist_ok=True)
     
-    # Additionally, track model with best validation f1 score (for saving)
+    # Additionally, track model with best validation f1 score and best validation macro accuracy (for saving)
     current_best_f1 = -1
+    current_best_macro_accuracy = 0.0
     
     # Compute normalization statistics from training dataset (used to normalize inputs during inference as well)
     if verbose: print("(2) Computing normalization statistics from the training dataset...")
@@ -89,7 +144,8 @@ def train_HAR70_model(
     
     # Training step
     if verbose: print(f"(3) Beginning training loop ({num_epochs} epochs)...")
-    for epoch in range(1, num_epochs + 1): # indexing starts at 1
+    training_start = time.time()
+    for epoch in range(1, num_epochs + 1): # epoch indexing starts at 1
         start_time = time.time()
         total_training_loss = 0
         model.train() # Set model to training mode
@@ -119,9 +175,13 @@ def train_HAR70_model(
         training_loss = total_training_loss / len(train_dataloader)
         training_loss_history.append(training_loss)
         # 2) Evaluate model on validation set
-        validation_loss, accuracy, f1, precision, recall, conf_matrix = evaluate_HAR70_model(model, validation_dataloader, normalizer, device)
+        validation_loss, micro_accuracy, macro_accuracy, f1, precision, recall, conf_matrix = evaluate_HAR70_model(
+            model=model, evaluation_dataloader=validation_dataloader, 
+            normalizer=normalizer, num_classes=model.num_classes, device=device
+        )
         validation_loss_history.append(validation_loss)
-        accuracy_history.append(accuracy)
+        micro_accuracy_history.append(micro_accuracy)
+        macro_accuracy_history.append(macro_accuracy)
         f1_history.append(f1)
         precision_history.append(precision)
         recall_history.append(recall)
@@ -132,7 +192,7 @@ def train_HAR70_model(
         if verbose:
             print(f"Epoch [{epoch}/{num_epochs}] | Time: {epoch_time:.2f}s")
             print(f"(Training) Loss: {training_loss:.4f}")
-            print(f"(Validation) Loss: {validation_loss:.4f}, Accuracy: {accuracy:.4f}, F1: {f1:.4f}, Precision: {precision:.4f}, Recall: {recall:.4f}")
+            print(f"(Validation) Loss: {validation_loss:.4f}, Accuracy (micro): {micro_accuracy:.4f}, Accuracy (macro): {macro_accuracy:.4f}, F1: {f1:.4f}, Precision: {precision:.4f}, Recall: {recall:.4f}")
                 
         # Automatic model saving
         if base_dir is not None:
@@ -140,6 +200,12 @@ def train_HAR70_model(
             if f1 > current_best_f1:
                 current_best_f1 = f1 # Update new current best f1 score
                 model_filename = f"Best_F1.pth"
+                save_model(model, model_filename, save_dir, verbose=verbose)
+                
+            # Save model if it has best validation accuracy
+            if macro_accuracy > current_best_macro_accuracy:
+                current_best_macro_accuracy = macro_accuracy # Update new current best
+                model_filename = f"Best_Macro_Accuracy.pth"
                 save_model(model, model_filename, save_dir, verbose=verbose)
             
             # Save model after every specified number of epochs
@@ -149,15 +215,20 @@ def train_HAR70_model(
             
         if verbose: print("="*100) # Purely visual
 
-    if verbose: print("(4) Training session finished.")
-    return training_loss_history, validation_loss_history, accuracy_history, f1_history, precision_history, recall_history, normalizer
+    training_end = time.time()
+    training_duration_in_seconds = training_end - training_start
+    minutes = int(training_duration_in_seconds // 60)
+    seconds = int(training_duration_in_seconds % 60)
+    if verbose: print(f"(4) Training completed in {minutes} minutes, {seconds} seconds.")
+    return training_loss_history, validation_loss_history, micro_accuracy_history, macro_accuracy_history, f1_history, precision_history, recall_history, normalizer
      
 def evaluate_HAR70_model(
     model: HarBaseModel, 
     evaluation_dataloader: DataLoader,
     normalizer: Normalizer,
+    num_classes: Optional[int] = None,
     device: Optional[torch.device] = None
-) -> Tuple[float, float, float, float, float, np.ndarray]:
+) -> Tuple[float, float, float, float, float, float, np.ndarray]:
     """
     Evaluates the model's performance on the given evaluation dataset. 
 
@@ -166,24 +237,29 @@ def evaluate_HAR70_model(
         evaluation_dataloader (DataLoader): The dataloader for the evaluation dataset.
         normalizer (Normalizer): Normalizer object that has already been fitted to training data (i.e. normalization
             statistics already computed).
-        device: The device to load batch data onto, which should be the same device that the model is on. Defaults to
-            None, in which case the device that the model is on will be inferred by checking the model's first parameter.
+        num_classes(Optional[int], optional): Number of classes to predict. Defaults to None, in which case the number
+            of classes will be inferred from the model's attribute (`model.num_classes`).
+        device (Optional[torch.device], optional): The device to load batch data onto, which should be the same device 
+            that the model is on. Defaults to None, in which case the device that the model is on will be inferred by 
+            checking the model's first parameter.
 
     Returns:
-        Tuple[float, float, float, float, float, np.ndarray]: Tuple containing the model's average evaluation loss 
-            (per sample sequence), accuracy, f1, precision, recall, and the confusion matrix. 
+        Tuple[float, float, float, float, float, float, np.ndarray]: Tuple containing the model's average evaluation loss 
+            (per sample sequence), micro accuracy, macro accuracy, macro f1, macro precision, macro recall, and the confusion matrix. 
     """
     device = device or next(model.parameters()) # Infer the device the model is on by checking the first parameter
+    num_classes = num_classes or model.num_classes
     
     model.eval() # Set model to evaluation mode
     criterion = nn.CrossEntropyLoss()
     total_loss = 0
     
-    accuracy = torchmetrics.classification.MulticlassAccuracy(num_classes=7).to(device)
-    f1_score = torchmetrics.classification.MulticlassF1Score(num_classes=7, average="macro").to(device)
-    precision = torchmetrics.classification.MulticlassPrecision(num_classes=7, average="macro").to(device)
-    recall = torchmetrics.classification.MulticlassRecall(num_classes=7, average="macro").to(device)
-    confusion_matrix = torchmetrics.ConfusionMatrix(num_classes=7, task="multiclass").to(device)
+    micro_accuracy = torchmetrics.classification.MulticlassAccuracy(num_classes=num_classes, average="micro").to(device)
+    macro_accuracy = torchmetrics.classification.MulticlassAccuracy(num_classes=num_classes, average="macro").to(device)
+    f1_score = torchmetrics.classification.MulticlassF1Score(num_classes=num_classes, average="macro").to(device)
+    precision = torchmetrics.classification.MulticlassPrecision(num_classes=num_classes, average="macro").to(device)
+    recall = torchmetrics.classification.MulticlassRecall(num_classes=num_classes, average="macro").to(device)
+    confusion_matrix = torchmetrics.ConfusionMatrix(num_classes=num_classes, task="multiclass").to(device)
     with torch.no_grad():  # No gradients needed for evaluation
         for input_sequences, target_labels in evaluation_dataloader:
             input_sequences, target_labels = input_sequences.to(device), target_labels.to(device).long()
@@ -195,7 +271,8 @@ def evaluate_HAR70_model(
             # Update metrics
             loss = criterion(logits, target_labels)
             total_loss += loss.item()
-            accuracy.update(predictions, target_labels)
+            micro_accuracy.update(predictions, target_labels)
+            macro_accuracy.update(predictions, target_labels)
             f1_score.update(predictions, target_labels)
             precision.update(predictions, target_labels)
             recall.update(predictions, target_labels)
@@ -203,13 +280,14 @@ def evaluate_HAR70_model(
 
     # Compute final metric values
     final_evaluation_loss = total_loss / len(evaluation_dataloader)
-    final_accuracy = accuracy.compute().item()
+    final_micro_accuracy = micro_accuracy.compute().item()
+    final_macro_accuracy = macro_accuracy.compute().item()
     final_f1 = f1_score.compute().item()
     final_precision = precision.compute().item()
     final_recall = recall.compute().item()
     final_conf_matrix = confusion_matrix.compute().cpu().numpy() 
 
-    return final_evaluation_loss, final_accuracy, final_f1, final_precision, final_recall, final_conf_matrix
+    return final_evaluation_loss, final_micro_accuracy, final_macro_accuracy, final_f1, final_precision, final_recall, final_conf_matrix
 
 def save_model(
     model: nn.Module, 
@@ -234,7 +312,8 @@ def save_model(
 def save_training_plots_and_metric_history(
     training_loss_history: List[float], 
     validation_loss_history: List[float], 
-    accuracy_history: List[float], 
+    micro_accuracy_history: List[float], 
+    macro_accuracy_history: List[float], 
     f1_history: List[float], 
     precision_history: List[float], 
     recall_history: List[float], 
@@ -242,7 +321,7 @@ def save_training_plots_and_metric_history(
     figsize: Tuple[float, float] = (7.0, 4.0),
     base_dir: str = "results",
     device: Optional[torch.device] = None
-) -> None:
+) -> str:
     """
     Saves plots for the training process metrics (`.png` images) and the input metric histories in a subdirectory
     inside the specified directory.
@@ -250,7 +329,8 @@ def save_training_plots_and_metric_history(
     Args:
         training_loss_history (List[float]): History of training loss values.
         validation_loss_history (List[float]): History of validation loss values.
-        accuracy_history (List[float]): History of accuracy values.
+        micro_accuracy_history (List[float]): History of micro accuracy values.
+        macro_accuracy_history (List[float]): History of macro accuracy values.
         f1_history (List[float]): History of F1 score values.
         precision_history (List[float]): History of precision values.
         recall_history (List[float]): History of recall values.
@@ -259,6 +339,9 @@ def save_training_plots_and_metric_history(
         base_dir (str, optional): Directory to save plots and histories of metrics in. Defaults to "results".
         device (Optional[torch.device], optional): The device the model and batch data should be loaded on. 
             Defaults to None, in which case the device will be set to CUDA if available, or CPU otherwise.
+    
+    Returns:
+        str: The save directory.
     """
     # Create subdirectory to save metric histories and the plots to. 
     os.makedirs(base_dir, exist_ok=True) # Creates base directory
@@ -269,8 +352,8 @@ def save_training_plots_and_metric_history(
     epochs = range(1, len(training_loss_history) + 1)  
 
     # Plotting for all metrics
-    eval_metric_names = ["Training Loss", "Validation Loss", "Accuracy", "F1 score", "Precision", "Recall"]
-    eval_metrics = [training_loss_history, validation_loss_history, accuracy_history, f1_history, precision_history, recall_history]
+    eval_metric_names = ["Training Loss", "Validation Loss", "Accuracy (micro)", "Accuracy (macro)", "F1 score", "Precision", "Recall"]
+    eval_metrics = [training_loss_history, validation_loss_history, micro_accuracy_history, macro_accuracy_history, f1_history, precision_history, recall_history]
 
     # Create and save the plots
     for i, eval_metric in enumerate(eval_metric_names):
@@ -291,7 +374,8 @@ def save_training_plots_and_metric_history(
     metric_histories = {
         "training_loss_history": torch.tensor(training_loss_history),
         "validation_loss_history": torch.tensor(validation_loss_history),
-        "accuracy_history": torch.tensor(accuracy_history),
+        "micro_accuracy_history": torch.tensor(micro_accuracy_history),
+        "macro_accuracy_history": torch.tensor(macro_accuracy_history),
         "f1_history": torch.tensor(f1_history),
         "precision_history": torch.tensor(precision_history),
         "recall_history": torch.tensor(recall_history)
@@ -301,131 +385,6 @@ def save_training_plots_and_metric_history(
     history_path = os.path.join(save_dir, "metric_histories.pth")
     torch.save(metric_histories, history_path)
     print(f"✅ Metric histories saved to: {history_path}")
-
-def split_dataset_into_stratified_kfolds(
-    dataset: Dataset,
-    k: int,
-    random_state: Optional[int],
-    shuffle: bool
-) -> List[Subset]:
-    """
-    Splits dataset into K-folds (stratified).
-
-    Args:
-        dataset (Dataset): Dataset to be split.
-        k (int): Number of folds (splits).
-        random_state (Optional[int]): Random seed for reproducibility.
-        shuffle (bool): Whether to shuffle the dataset before splitting into folds.
-    """
-    labels = np.array([dataset[i][1] for i in range(len(dataset))]) # Extract labels
-    skf = StratifiedKFold(n_splits=k, shuffle=shuffle, random_state=random_state)
-    k_folds: List[Subset] = []
-    for _, val_idx in skf.split(np.arange(len(dataset)), labels):
-        k_folds.append(Subset(dataset, val_idx)) # Each fold is a PyTorch Subset
-        
-    return k_folds
-
-def kfold_stratified_cv_for_har(
-    dataset: HARDataset, 
-    model_class: Type[HarBaseModel],
-    optimizer_class: Type[torch.optim.Optimizer],
-    k: int = 5, 
-    batch_size: int = 128,
-    num_epochs: int = 15,
-    model_kwargs: Optional[Dict[str, Any]] = None,
-    optimizer_kwargs: Optional[Dict[str, Any]] = None,
-    base_dir: Optional[str] = "models", 
-    random_state: Optional[int] = None,
-    shuffle: bool = True
-) -> Tuple[float, float, float, float]:
-    """
-    Perform Stratified K-Fold Cross Validation for HAR model training and evaluation.
-
-    Args:
-        dataset (HARDataset): HAR Dataset containing data and labels.
-        model_class (Type[HarBaseModel]): The class of the HAR model (subclass of `HarBaseModel`) to instantiate.
-        optimizer_class (Type[torch.optim.Optimizer]): The optimizer class to use (e.g. `torch.optim.Adam`).
-        k (int, optional): Number of folds (splits). Defaults to 5.
-        batch_size (int, optional): Batch size for training and validation dataloaders. Defaults to 128.
-        num_epochs (int, optional): Number of epochs for training each fold. Defaults to 15.
-        model_kwargs (Optional[Dict[str, Any]], optional): A dictionary of additional keyword arguments for model 
-            instantiation (passed to model class constructor). Defaults to None, which will initialize an empty 
-            dictionary.
-        optimizer_kwargs (Optional[Dict[str, Any]], optional): A dcitionary of additional keyword arguments for
-            optimizer instantiation (passed to optimizer class constructor). Defaults to None, which will initialize an
-            empty dictionary.
-        base_dir (Optional[str], optional): Directory where parameters of models evaluated on each fold are saved to.
-            If set to None, model saving will be disabled. Defaults to "models".  
-        random_state (Optional[int], optional): Random seed for reproducibility. Defaults to None.
-        shuffle (bool, optional): Whether to shuffle the dataset before splitting into folds. Defaults to True.
-
-    Returns:
-        Tuple[float, float, float, float]: A tuple containing the mean accuracy, F1 score, precision, and recall across
-            all k folds.
-    """
-    warnings.warn(f"⚠️ Code is outdated.")
-    
-    model_kwargs = model_kwargs or {}
-    optimizer_kwargs = optimizer_kwargs or {}
-    
-    # 1) Split dataset into K folds        
-    k_folds = split_dataset_into_stratified_kfolds(dataset, k, random_state, shuffle)
-    
-    # 2) Store metric results across folds
-    accuracy_results, f1_results, precision_results, recall_results = [], [], [], [] 
-    
-    # 3) Prepare directory to save params of models evaluated on each fold
-    if base_dir is not None:
-        os.makedirs(base_dir, exist_ok=True)
-        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S") # Use timestamp as subdirectory name
-        model_type = model_class.__name__
-        subdirectory_name = f"KFoldCV_{model_type}_{timestamp}"
-        save_dir = os.path.join(base_dir, subdirectory_name) # Subdirectory
-        os.makedirs(save_dir, exist_ok=True)
-    
-    # 4) In each iteration, one fold is assigned as validation data, while model is trained on remaining folds
-    for i in range(k):
-        print(f"Fold [{i+1}/{k}]")
-        # a) Designate the training data and the validation data for this iteration
-        validation_dataset = k_folds[i] # 1 fold used for validation
-        validation_dataloader = DataLoader(validation_dataset, batch_size = batch_size, shuffle = True)
-        train_dataset = ConcatDataset([k_folds[j] for j in range(k) if j != i]) # remaining k-1 folds for training
-        train_dataloader = DataLoader(train_dataset, batch_size = batch_size, shuffle = True)
-        
-        # b) Re-initialize the model during each iteration
-        model = model_class(**model_kwargs)
-        
-        # c) Re-initialize the optimizer during each iteration
-        optimizer = optimizer_class(model.parameters(), **optimizer_kwargs)
-        
-        # d) Train model
-        training_output = train_HAR70_model(
-            model, optimizer, train_dataloader, validation_dataloader,
-            num_epochs=num_epochs,
-            base_dir=None, # Disable automatic model saving - we will save model params manually
-            verbose=False
-        )
-        _, _, accuracy_history, f1_history, precision_history, recall_history, _ = training_output
-        accuracy, f1, precision, recall = accuracy_history[-1], f1_history[-1], precision_history[-1], recall_history[-1]
-        accuracy_results.append(accuracy)
-        f1_results.append(f1)
-        precision_results.append(precision)
-        recall_results.append(recall)
-        print(f"Accuracy: {accuracy:.4f}, F1: {f1:.4f}, Precision: {precision:.4f}, Recall: {recall:.4f}")
-        
-        # e) Save final model for this iteration
-        if base_dir is not None: # model saving enabled
-            model_filename = f"fold_{i+1}.pth"
-            save_model(model, model_filename, save_dir, verbose=False)
-        
-    # Compute mean metrics over all folds
-    print(f"Final results (mean over {k} folds)")
-    mean_accuracy = np.mean(accuracy_results)
-    mean_f1 = np.mean(f1_results)
-    mean_precision = np.mean(precision_results)
-    mean_recall = np.mean(recall_results)
-    print(f"Accuracy: {mean_accuracy:.4f}, F1: {mean_f1:.4f}, Precision: {mean_precision:.4f}, Recall: {mean_recall:.4f}")
-    
-    return mean_accuracy, mean_f1, mean_precision, mean_recall
+    return save_dir
         
         

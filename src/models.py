@@ -27,7 +27,7 @@ class HarBaseModel(nn.Module, ABC):
         hidden_size: int = 30,
         num_layers: int = 1,
         dropout_prob: float = 0.0,
-        num_classes: int = 7
+        num_classes: int = 12
     ):
         """
         Initializes the base HAR model.
@@ -37,7 +37,7 @@ class HarBaseModel(nn.Module, ABC):
             hidden_size (int, optional): Dimensionality of the hidden state vector. Defaults to 30.
             num_layers (int, optional): Number of recurrent layers. Defaults to 1.
             dropout_prob (float, optional): Dropout probability (ignored if num_layers == 1). Defaults to 0.0.
-            num_classes (int, optional): Number of output classes. Defaults to 7.
+            num_classes (int, optional): Number of output classes. Defaults to 12.
         """
         super().__init__()
         self.input_size = input_size
@@ -72,7 +72,7 @@ class HarLSTM(HarBaseModel):
         hidden_size: int = 30,
         num_layers: int = 1, 
         dropout_prob: float = 0.0, 
-        num_classes = 7
+        num_classes = 12
     ):
         """
         Initializes the LSTM HAR model.
@@ -82,7 +82,7 @@ class HarLSTM(HarBaseModel):
             hidden_size (int, optional): Dimensionality of the hidden state vector. Defaults to 30.
             num_layers (int, optional): Number of recurrent layers. Defaults to 1.
             dropout_prob (float, optional): Dropout probability (ignored if num_layers == 1). Defaults to 0.0.
-            num_classes (int, optional): Number of output classes. Defaults to 7.
+            num_classes (int, optional): Number of output classes. Defaults to 12.
         """
         super().__init__(input_size, hidden_size, num_layers, dropout_prob, num_classes)
         self.rnn = nn.LSTM(
@@ -109,7 +109,7 @@ class HarGRU(HarBaseModel):
         hidden_size: int = 30,
         num_layers: int = 1, 
         dropout_prob: float = 0.0, 
-        num_classes = 7
+        num_classes = 12
     ):
         """
         Initializes the GRU HAR model.
@@ -119,7 +119,7 @@ class HarGRU(HarBaseModel):
             hidden_size (int, optional): Dimensionality of the hidden state vector. Defaults to 30.
             num_layers (int, optional): Number of recurrent layers. Defaults to 1.
             dropout_prob (float, optional): Dropout probability (ignored if num_layers == 1). Defaults to 0.0.
-            num_classes (int, optional): Number of output classes. Defaults to 7.
+            num_classes (int, optional): Number of output classes. Defaults to 12.
         """
         super().__init__(input_size, hidden_size, num_layers, dropout_prob, num_classes)
         self.rnn = nn.GRU(
@@ -152,7 +152,7 @@ class HarTransformer(HarBaseModel):
         num_layers: int = 2, 
         num_heads: int = 2, 
         dropout_prob: float = 0.1, 
-        num_classes: int = 7,
+        num_classes: int = 12,
         max_sequence_length: int = 5000
     ):
         """
@@ -167,7 +167,7 @@ class HarTransformer(HarBaseModel):
             num_layers (int, optional): Number of Transformer encoder layers. Defaults to 2.
             num_heads (int, optional): Number of attention heads. Defaults to 2.
             dropout_prob (float, optional): Dropout probability. Defaults to 0.1.
-            num_classes (int, optional): Number of output classes. Defaults to 7.
+            num_classes (int, optional): Number of output classes. Defaults to 12.
             max_sequence_length (int, optional): Specifies the maximum sequence length for positional encoding. 
                 Defaults to 5000.
         """
@@ -275,7 +275,7 @@ class HarTransformerExperimental(HarBaseModel):
         num_layers: int = 2,
         num_heads: int = 2,
         dropout_prob: float = 0.1, 
-        num_classes: int = 7,
+        num_classes: int = 12,
         cnn_kernel_sizes: Tuple[int] = (5, 3),
         cnn_stride: int = 1,
         cnn_padding: int = 1,
@@ -293,7 +293,7 @@ class HarTransformerExperimental(HarBaseModel):
             num_layers (int, optional): Number of Transformer encoder layers. Defaults to 2.
             num_heads (int, optional): Number of attention heads. Defaults to 2.
             dropout_prob (float, optional): Dropout probability. Defaults to 0.1.
-            num_classes (int, optional): Number of output classes. Defaults to 7.
+            num_classes (int, optional): Number of output classes. Defaults to 12.
             cnn_kernel_sizes (Tuple[int], optional): Kernel sizes for CNN layer. Defaults to (5, 3).
             cnn_stride (int, optional): Kernel stride for CNN layer. Defaults to 1.
             cnn_padding (int, optional): Padding for CNN layer. Defaults to 1.
@@ -449,3 +449,157 @@ class HarTransformerExperimental(HarBaseModel):
                 context = context.transpose(1, 2).contiguous().view(B, T, C)  # (B, T, embed_dim)
 
                 return self.out_proj(context)
+            
+
+
+
+
+
+
+#################
+# BiLSTM Model  #
+#################
+
+class HarBiLSTM(HarBaseModel):
+    def __init__(
+        self,
+        input_size: int = 6,
+        hidden_units: list = [32, 64],
+        dropout_prob: float = 0.1,
+        num_classes: int = 12
+    ):
+        super().__init__(input_size, hidden_units[0], len(hidden_units), dropout_prob, num_classes)
+        self.lstm_layers = nn.ModuleList()
+        for i, hidden_size in enumerate(hidden_units):
+            self.lstm_layers.append(nn.LSTM(
+                input_size if i == 0 else hidden_units[i-1] * 2,
+                hidden_size,
+                batch_first=True,
+                bidirectional=True
+            ))
+        self.fc = nn.Sequential(
+            nn.Linear(hidden_units[-1] * 2, 512),
+            nn.ReLU(),
+            nn.Linear(512, 512),
+            nn.ReLU(),
+            nn.Dropout(dropout_prob),
+            nn.Linear(512, num_classes)
+        )
+
+    def forward(self, input_seq: torch.Tensor) -> torch.Tensor:
+        x = input_seq
+        for lstm in self.lstm_layers:
+            x, _ = lstm(x)
+        x = x[:, -1, :]
+        return self.fc(x)
+
+#################
+# Simple 1D CNN #
+#################
+
+class HarCNN(HarBaseModel):
+    def __init__(
+        self,
+        input_size: int = 6,
+        num_kernels: int = 64,
+        kernel_sizes: list = [5, 5],
+        dropout_prob: float = 0.1,
+        pooling: bool = False,
+        batch_normalization: bool = False,
+        num_classes: int = 12
+    ):
+        super().__init__(input_size, num_kernels, len(kernel_sizes), dropout_prob, num_classes)
+        layers = []
+        in_channels = input_size
+        for k in kernel_sizes:
+            layers.append(nn.Conv1d(in_channels, num_kernels, k, padding=k // 2))
+            layers.append(nn.ReLU())
+            if pooling:
+                layers.append(nn.MaxPool1d(kernel_size=3, stride=1))
+            if batch_normalization:
+                layers.append(nn.BatchNorm1d(num_kernels))
+            layers.append(nn.Dropout(dropout_prob))
+            in_channels = num_kernels
+        self.conv = nn.Sequential(*layers)
+        self.fc = nn.Sequential(
+            nn.Linear(num_kernels, 512),
+            nn.ReLU(),
+            nn.Linear(512, 512),
+            nn.ReLU(),
+            nn.Dropout(dropout_prob / 2),
+            nn.Linear(512, num_classes)
+        )
+
+    def forward(self, input_seq: torch.Tensor) -> torch.Tensor:
+        x = input_seq.transpose(1, 2)
+        x = self.conv(x)
+        x = x.mean(dim=2)
+        return self.fc(x)
+
+#######################
+# Inception-style CNN #
+#######################
+
+class InceptionModule(nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_sizes, pooling, dropout, batch_normalization):
+        super().__init__()
+        self.branches = nn.ModuleList([
+            nn.Sequential(
+                nn.Conv1d(in_channels, out_channels, k, padding=k // 2),
+                nn.ReLU()
+            ) for k in kernel_sizes
+        ])
+        self.pooling = nn.MaxPool1d(3, stride=1) if pooling else None
+        self.bn = nn.BatchNorm1d(out_channels * len(kernel_sizes)) if batch_normalization else None
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x):
+        outputs = [branch(x) for branch in self.branches]
+        x = torch.cat(outputs, dim=1)
+        if self.pooling:
+            x = self.pooling(x)
+        if self.bn:
+            x = self.bn(x)
+        x = self.dropout(x)
+        return x
+
+class HarInceptionCNN(HarBaseModel):
+    def __init__(
+        self,
+        input_size: int = 6,
+        num_kernels: int = 64,
+        num_layers: int = 2,
+        kernel_sizes: list = [3, 5, 7, 9],
+        pooling: bool = False,
+        dropout_prob: float = 0.1,
+        batch_normalization: bool = False,
+        num_classes: int = 12
+    ):
+        super().__init__(input_size, num_kernels, num_layers, dropout_prob, num_classes)
+        layers = []
+        in_channels = input_size
+        for _ in range(num_layers):
+            layers.append(InceptionModule(
+                in_channels=in_channels,
+                out_channels=num_kernels,
+                kernel_sizes=kernel_sizes,
+                pooling=pooling,
+                dropout=dropout_prob,
+                batch_normalization=batch_normalization
+            ))
+            in_channels = num_kernels * len(kernel_sizes)
+        self.inception = nn.Sequential(*layers)
+        self.fc = nn.Sequential(
+            nn.Linear(in_channels, 512),
+            nn.ReLU(),
+            nn.Linear(512, 512),
+            nn.ReLU(),
+            nn.Dropout(dropout_prob / 2),
+            nn.Linear(512, num_classes)
+        )
+
+    def forward(self, input_seq: torch.Tensor) -> torch.Tensor:
+        x = input_seq.transpose(1, 2)
+        x = self.inception(x)
+        x = x.mean(dim=2)
+        return self.fc(x)
