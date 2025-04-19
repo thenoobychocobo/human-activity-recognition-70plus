@@ -1,5 +1,3 @@
 data/*
-dataset_cache/*
-results/*
-models/*
+datasets_cache/*
 **/__pycache__/

@@ -1,0 +1,25 @@
+[Dataset Configuration]
+Sequence size: 250
+Stride: 125
+Training subjects: 32
+Validation subjects: 4
+Test subjects: 4
+Random seed: 42
+
+[Training Hyperparameters]
+Optimizer: Adam
+Batch Size: 256
+Learning Rate: 0.001
+Epochs: 30
+Weight Decay (L2 Regularization): 1e-05
+
+[Model Hyperparameters]
+model_kwargs: All default hyperparameter values used.
+
+[Test Results]
+Loss: 0.3479181426136117
+Accuracy (micro): 0.9039007425308228
+Accuracy (macro): 0.5949437618255615
+F1: 0.5792617797851562
+Precision: 0.5775675773620605
+Recall: 0.5949437618255615

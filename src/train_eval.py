@@ -319,8 +319,7 @@ def save_training_plots_and_metric_history(
     recall_history: List[float], 
     model_name: str,
     figsize: Tuple[float, float] = (7.0, 4.0),
-    base_dir: str = "results",
-    device: Optional[torch.device] = None
+    base_dir: str = "results"
 ) -> str:
     """
     Saves plots for the training process metrics (`.png` images) and the input metric histories in a subdirectory
@@ -337,8 +336,6 @@ def save_training_plots_and_metric_history(
         model_name (str): Name of model (only for the subdirectory name).
         figsize (Tuple[float, float]): Width, height of plots in inches. Defaults to (7.0, 4.0). 
         base_dir (str, optional): Directory to save plots and histories of metrics in. Defaults to "results".
-        device (Optional[torch.device], optional): The device the model and batch data should be loaded on. 
-            Defaults to None, in which case the device will be set to CUDA if available, or CPU otherwise.
     
     Returns:
         str: The save directory.
