@@ -122,7 +122,7 @@ def plot_and_save_confusion_matrix(
     )
     plt.xlabel("Predicted Label")
     plt.ylabel("True Label")
-    plt.title("Confusion Matrix (Counts)")
+    plt.title("Confusion Matrix")
     plt.xticks(rotation=45, ha="right")
     plt.yticks(rotation=0)
     plt.tight_layout()
@@ -256,28 +256,33 @@ def compute_metrics_from_confusion_matrix(conf_matrix: np.ndarray) -> Dict[str, 
     true_negatives = np.sum(conf_matrix) - (true_positives + false_positives + false_negatives)
 
     # Precision, Recall, F1 for each class
-    precision = true_positives / (true_positives + false_positives)
-    recall = true_positives / (true_positives + false_negatives)
-    f1 = 2 * (precision * recall) / (precision + recall)
+    precision = np.divide(true_positives, (true_positives + false_positives),
+                          out=np.zeros_like(true_positives, dtype=float),
+                          where=(true_positives + false_positives)!=0)
+    recall = np.divide(true_positives, (true_positives + false_negatives),
+                       out=np.zeros_like(true_positives, dtype=float),
+                       where=(true_positives + false_negatives)!=0)
+    f1 = np.divide(2 * (precision * recall), (precision + recall),
+                   out=np.zeros_like(precision, dtype=float),
+                   where=(precision + recall)!=0)
 
-    # Handle classes with zero support (ignore them in averages)
-    valid_classes = (true_positives + false_negatives) > 0  # True positives + false negatives must > 0
+    # Only consider classes that actually exist (where there are samples)
+    valid_classes = (true_positives + false_negatives) > 0
     precision = precision[valid_classes]
     recall = recall[valid_classes]
     f1 = f1[valid_classes]
 
-    # Calculate macro averages (mean of valid classes)
     macro_precision = np.mean(precision)
     macro_recall = np.mean(recall)
     macro_f1 = np.mean(f1)
 
-    # Accuracy (micro i.e. global)
     micro_accuracy = np.sum(true_positives) / np.sum(conf_matrix)
-    
-    # Accuracy (macro)
-    class_accuracies = true_positives / np.sum(conf_matrix, axis=1)  # Accuracy for each class
-    macro_accuracy = np.nanmean(class_accuracies)  # Ignore NaN values where a class has no samples
-    
+
+    class_accuracies = np.divide(true_positives, np.sum(conf_matrix, axis=1),
+                                 out=np.zeros_like(true_positives, dtype=float),
+                                 where=np.sum(conf_matrix, axis=1)!=0)
+    macro_accuracy = np.mean(class_accuracies)
+
     return {
         "micro_accuracy": float(micro_accuracy),
         "macro_accuracy": float(macro_accuracy),
@@ -285,3 +290,40 @@ def compute_metrics_from_confusion_matrix(conf_matrix: np.ndarray) -> Dict[str, 
         "recall": float(macro_recall),
         "f1": float(macro_f1)
     }
+
+# HELPER FUNCTION FOR NOTEBOOK
+def process_confusion_matrix(
+    conf_matrix: np.ndarray,
+    class_names: List[str],
+    save_dir: str,
+    file_name: str = "confusion_matrix"  
+) -> Dict[str, float]:
+    # 1) Unnormalized confusion matrix
+    ## a) Compute results
+    metric_results = save_confusion_matrix_and_metrics(
+        save_dir=save_dir,
+        conf_matrix_unnormalized=conf_matrix,
+        file_name=file_name
+    )
+    ## b) Save and plot
+    plot_and_save_confusion_matrix(
+        save_dir=save_dir,
+        conf_matrix=conf_matrix,
+        file_name=file_name,
+        class_names=class_names
+    )
+    
+    # 2) Normalized confusion matrix
+    ## Save and plot
+    conf_matrix_normalized = normalize_confusion_matrix(conf_matrix)
+    plot_and_save_confusion_matrix(
+        save_dir=save_dir,
+        conf_matrix=conf_matrix_normalized,
+        file_name=file_name+"_norm",
+        class_names=class_names
+    )
+    
+    return metric_results
+    
+    
+    
