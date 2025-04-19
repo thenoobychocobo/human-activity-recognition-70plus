@@ -18,7 +18,6 @@ root/
 ├── models/
 ├── notebooks/                   
 │   ├── eda.ipynb
-│   ├── kfold_cv.ipynb
 │   └── model_training.ipynb
 ├── results/
 ├── saved_components/
@@ -27,6 +26,7 @@ root/
 │   ├── data_preparation.py
 │   ├── models.py
 │   └── train_eval.py
+│   └── utils.py
 ├── .gitignore
 ├── README.md
 └── requirements.txt                   
