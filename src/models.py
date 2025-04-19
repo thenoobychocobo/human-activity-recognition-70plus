@@ -290,8 +290,8 @@ class HarTransformerExperimental(HarBaseModel):
                 Defaults to 32.
             dim_feedforward (Optional[int], optional): Number of units in hidden layers of feed-forward network (d_ff). 
                 Defaults to None, in which case it will initialize to hidden_size * 4.
-            num_layers (int, optional): Number of Transformer encoder layers. Defaults to 2.
-            num_heads (int, optional): Number of attention heads. Defaults to 2.
+            num_layers (int, optional): Number of Transformer encoder layers. Defaults to 4.
+            num_heads (int, optional): Number of attention heads. Defaults to 4.
             dropout_prob (float, optional): Dropout probability. Defaults to 0.1.
             num_classes (int, optional): Number of output classes. Defaults to 12.
             cnn_kernel_sizes (Tuple[int], optional): Kernel sizes for CNN layer. Defaults to (5, 3).
