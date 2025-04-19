@@ -17,9 +17,9 @@ Weight Decay (L2 Regularization): 1e-05
 model_kwargs: All default hyperparameter values used.
 
 [Test Results]
-Loss: 0.2948154881596565
-Accuracy (micro): 0.9152560234069824
-Accuracy (macro): 0.6802397966384888
-F1: 0.6728003025054932
-Precision: 0.7196424007415771
-Recall: 0.6802397966384888
+Loss: 0.4296192244479531
+Accuracy (micro): 0.8892861008644104
+Accuracy (macro): 0.6294184327125549
+F1: 0.6401735544204712
+Precision: 0.6865266561508179
+Recall: 0.6294184327125549

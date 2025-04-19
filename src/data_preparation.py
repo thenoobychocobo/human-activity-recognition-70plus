@@ -353,7 +353,7 @@ def prepare_datasets(
     num_test: int = 4,
     random_state: int = 42,
     data_dir: str = "data",
-    save_dir: str = "dataset_cache",
+    save_dir: str = "datasets_cache",
     load_if_exists: bool = True
 ) -> Tuple[HARDataset, HARDataset, HARDataset]:
     """
